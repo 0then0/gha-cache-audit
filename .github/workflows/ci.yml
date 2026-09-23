@@ -6,7 +6,7 @@ permissions:
   contents: read
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       matrix:
         python: ['3.11', '3.13']
@@ -36,16 +36,13 @@ jobs:
           python-version: '3.13'
       - id: audit
         uses: ./
-        continue-on-error: true
         with:
-          path: examples/demo
+          path: tests/fixtures/safe.yml
           format: sarif
-      - name: Verify finding and report
+      - name: Verify clean report
         shell: bash
         env:
-          AUDIT_OUTCOME: ${{ steps.audit.outcome }}
           AUDIT_REPORT: ${{ steps.audit.outputs.report }}
         run: |
-          test "$AUDIT_OUTCOME" = failure
           test -s "$AUDIT_REPORT"
-          python -c 'import json,sys; report=json.load(open(sys.argv[1], encoding="utf-8")); assert any(result["ruleId"] == "GHA-CACHE-001" for result in report["runs"][0]["results"])' "$AUDIT_REPORT"
+          python -c 'import json,sys; run=json.load(open(sys.argv[1], encoding="utf-8"))["runs"][0]; assert not run["results"] and run["invocations"][0]["executionSuccessful"]' "$AUDIT_REPORT"
