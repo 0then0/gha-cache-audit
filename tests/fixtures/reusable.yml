@@ -1,0 +1,4 @@
+on: workflow_call
+jobs:
+  caller:
+    uses: owner/repo/.github/workflows/test.yml@main

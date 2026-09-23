@@ -1,0 +1,53 @@
+name: GHA Cache Auditor
+description: Detect potentially incomplete cache keys in repository workflows
+inputs:
+  path:
+    description: Repository or workflow directory to analyze
+    default: .
+  format:
+    description: Report format (text, json, sarif)
+    default: text
+  min-confidence:
+    description: Minimum finding confidence (high or medium)
+    default: high
+outputs:
+  report:
+    description: Path to the generated report, including on finding failures
+    value: ${{ steps.audit.outputs.report }}
+runs:
+  using: composite
+  steps:
+    - id: audit
+      shell: bash
+      env:
+        AUDITOR_SOURCE: ${{ github.action_path }}
+        AUDITOR_TARGET: ${{ inputs.path }}
+        AUDITOR_FORMAT: ${{ inputs.format }}
+        AUDITOR_CONFIDENCE: ${{ inputs.min-confidence }}
+      run: |
+        set -euo pipefail
+        audit_tmp="$(mktemp -d "${RUNNER_TEMP}/gha-cache-audit.XXXXXX")"
+        trap 'rm -rf "$audit_tmp/venv"' EXIT
+        python -m venv "$audit_tmp/venv"
+        if [ -x "$audit_tmp/venv/bin/python" ]; then
+          audit_python="$audit_tmp/venv/bin/python"
+        else
+          audit_python="$audit_tmp/venv/Scripts/python.exe"
+        fi
+        mkdir "$audit_tmp/package"
+        cp "$AUDITOR_SOURCE/pyproject.toml" "$AUDITOR_SOURCE/README.md" "$AUDITOR_SOURCE/LICENSE" "$audit_tmp/package/"
+        cp -R "$AUDITOR_SOURCE/src" "$audit_tmp/package/"
+        "$audit_python" -m pip install --disable-pip-version-check "$audit_tmp/package"
+        report="$audit_tmp/report.json"
+        if [ "$AUDITOR_FORMAT" = sarif ]; then report="$audit_tmp/report.sarif"; fi
+        if [ "$AUDITOR_FORMAT" = text ]; then report="$audit_tmp/report.txt"; fi
+        echo "report=$report" >> "$GITHUB_OUTPUT"
+        set +e
+        "$audit_python" -m gha_cache_audit --format "$AUDITOR_FORMAT" --min-confidence "$AUDITOR_CONFIDENCE" -- "$AUDITOR_TARGET" > "$report"
+        audit_status=$?
+        set -e
+        command_token="$("$audit_python" -c 'import secrets; print(secrets.token_hex(32))')"
+        echo "::stop-commands::$command_token"
+        cat "$report"
+        echo "::$command_token::"
+        exit "$audit_status"

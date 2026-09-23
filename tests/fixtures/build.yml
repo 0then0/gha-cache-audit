@@ -1,0 +1,9 @@
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/cache@v4
+        with:
+          path: dist
+          key: build-${{ hashFiles('package-lock.json') }}
+      - run: npm run build
