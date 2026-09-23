@@ -11,8 +11,8 @@ jobs:
       matrix:
         python: ['3.11', '3.13']
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
       - uses: astral-sh/setup-uv@v9.0.0
@@ -24,3 +24,28 @@ jobs:
       - run: uv run --no-sync ruff format --check .
       - run: uv run --no-sync python -m unittest discover -s tests -v
       - run: uv run --no-sync gha-cache-audit . --format sarif > cache-audit.sarif
+  action-smoke:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-26.04, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - id: audit
+        uses: ./
+        continue-on-error: true
+        with:
+          path: examples/demo
+          format: sarif
+      - name: Verify finding and report
+        shell: bash
+        env:
+          AUDIT_OUTCOME: ${{ steps.audit.outcome }}
+          AUDIT_REPORT: ${{ steps.audit.outputs.report }}
+        run: |
+          test "$AUDIT_OUTCOME" = failure
+          test -s "$AUDIT_REPORT"
+          python -c 'import json,sys; report=json.load(open(sys.argv[1], encoding="utf-8")); assert any(result["ruleId"] == "GHA-CACHE-001" for result in report["runs"][0]["results"])' "$AUDIT_REPORT"

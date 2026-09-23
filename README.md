@@ -88,7 +88,7 @@ Default confidence is `high`; `medium` includes both levels.
   An explicit npm install without package-lock use is not charged with a
   `package-lock.json` dependency.
 - **GHA-CACHE-004**: `dist`/`build`, a build command in the same directory and
-  existing `src` or known configuration files absent from the key. For
+  existing `src` or known configuration files not fully hashed by the key. For
   `.next/cache`, only an identifiable build configuration file is checked.
   Medium: the tool cannot prove whether later commands rebuild the output.
 - **GHA-CACHE-005**: a restore prefix drops runtime/platform partitioning retained
@@ -188,7 +188,7 @@ provision Python first on self-hosted runners. No repository files are edited.
 
 ```yaml
 steps:
-  - uses: actions/checkout@v4
+  - uses: actions/checkout@v5
   - uses: ./ # auditor repository checkout; for consumers use OWNER/REPO@REF
     with:
       path: .

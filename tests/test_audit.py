@@ -163,6 +163,18 @@ class AuditTests(unittest.TestCase):
             [
                 f.rule_id
                 for f in self.scan(
+                    text.replace(
+                        "- run: npm install --package-lock=false",
+                        "- run: |\n          npm install --package-lock=false\n          echo ok && npm ci",
+                    )
+                )
+            ],
+            ["GHA-CACHE-003"],
+        )
+        self.assertEqual(
+            [
+                f.rule_id
+                for f in self.scan(
                     text.replace("- run: npm install", "- run: echo npm install")
                 )
             ],
@@ -212,6 +224,18 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(findings[0].missing, ["vite.config.ts"])
         self.assertFalse(
             self.scan(text.replace("'src/**'", "'src/**', 'vite.config.ts'"), "medium")
+        )
+
+    def test_build_partial_source_hash_is_incomplete(self):
+        (self.root / "src").mkdir()
+        (self.root / "src/a.ts").write_text("export const a = 1")
+        (self.root / "src/b.ts").write_text("export const b = 1")
+        text = self.fixture("build").replace("'package-lock.json'", "'src/a.ts'")
+        findings = self.scan(text, "medium")
+        self.assertEqual([f.rule_id for f in findings], ["GHA-CACHE-004"])
+        self.assertEqual(findings[0].missing, ["src/**"])
+        self.assertFalse(
+            self.scan(text.replace("'src/a.ts'", "'src/a.ts', 'src/b.ts'"), "medium")
         )
 
     def test_incremental_build_configuration(self):

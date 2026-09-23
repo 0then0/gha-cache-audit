@@ -129,7 +129,7 @@ def npm_ignores_lock(commands, npmrc: Path) -> bool:
     for command in commands:
         for line in str(command.get("run", "")).splitlines():
             line = line.strip()
-            if re.match(r"^npm\s+ci\b", line):
+            if re.search(r"(?:^|&&|\|\||[;|])\s*npm\s+ci\b", line):
                 return False
             if re.match(r"^npm\s+(?:install|i)\b", line):
                 if any(operator in line for operator in ("&&", ";", "|")):
@@ -345,7 +345,7 @@ def analyze(cache: Cache, root: Path, overrides=(), source_cache=None) -> list[F
                     )
                     if source_cache is not None:
                         source_cache[project] = sources
-                if sources and not any(hashed(f, key.files) for f in sources):
+                if sources and not all(hashed(f, key.files) for f in sources):
                     missing_build.append(str(PurePosixPath(project) / "src/**"))
             configs = local_files(root, project, BUILD_CONFIGS)
             missing_build.extend(f for f in configs if not hashed(f, key.files))
