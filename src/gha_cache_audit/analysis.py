@@ -33,16 +33,33 @@ def scalar(value):
 
 
 def matches(path: str, pattern: str) -> bool:
-    pattern = pattern.removeprefix("./")
-    return fnmatchcase(path, pattern) or (
-        pattern.startswith("**/") and fnmatchcase(path, pattern[3:])
-    )
+    parts = path.replace("\\", "/").lstrip("/").split("/")
+    glob = pattern.removeprefix("./").strip("/").split("/")
+    positions = {0}
+    for segment in glob:
+        if segment == "**":
+            positions = set(range(min(positions), len(parts) + 1))
+        else:
+            positions = {
+                index + 1
+                for index in positions
+                if index < len(parts) and fnmatchcase(parts[index], segment)
+            }
+        if not positions:
+            return False
+    return bool(positions)
 
 
-def hashed(path: str, patterns: set[str]) -> bool:
-    return any(matches(path, p) for p in patterns if not p.startswith("!")) and not any(
-        matches(path, p[1:]) for p in patterns if p.startswith("!")
-    )
+def hashed(path: str, pattern_groups: list[tuple[str, ...]]) -> bool:
+    for patterns in pattern_groups:
+        included = False
+        for pattern in patterns:
+            bangs = len(pattern) - len(pattern.lstrip("!"))
+            if matches(path, pattern[bangs:]):
+                included = bangs % 2 == 0
+        if included:
+            return True
+    return False
 
 
 def classify(path: str):

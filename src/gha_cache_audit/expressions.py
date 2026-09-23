@@ -16,12 +16,12 @@ TOKEN = re.compile(
 @dataclass
 class Inputs:
     refs: set[str] = field(default_factory=set)
-    files: set[str] = field(default_factory=set)
+    files: list[tuple[str, ...]] = field(default_factory=list)
     opaque: bool = False
 
     def merge(self, other: "Inputs") -> None:
         self.refs.update(other.refs)
-        self.files.update(other.files)
+        self.files.extend(other.files)
         self.opaque |= other.opaque
 
 
@@ -70,14 +70,16 @@ def dependencies(value, aliases=None, seen=frozenset()) -> Inputs:
             if i < len(tokens) and tokens[i][1] == "(":
                 if name == "hashfiles":
                     j = i + 1
+                    patterns = []
                     while j < len(tokens) and tokens[j][1] != ")":
                         if tokens[j][0] == "string":
-                            result.files.add(tokens[j][1][1:-1].replace("''", "'"))
+                            patterns.append(tokens[j][1][1:-1].replace("''", "'"))
                         elif tokens[j][1] != ",":
                             result.opaque = True
                         j += 1
                     if j == len(tokens):
                         result.opaque = True
+                    result.files.append(tuple(patterns))
                 elif name not in {
                     "format",
                     "join",

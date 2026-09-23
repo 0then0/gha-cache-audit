@@ -130,22 +130,58 @@ def matrix_rows(value):
     return (rows, False) if len(rows) <= 256 else ([], True)
 
 
-def validate_data(value, active=None, depth=0):
+def validate_data(value, active=None, heights=None, depth=0):
     """Reject YAML-only values and cycles before they enter JSON reports."""
     active = set() if active is None else active
+    heights = {} if heights is None else heights
     if depth > 100 or id(value) in active:
         raise ValueError("workflow contains a cyclic or deeply nested YAML structure")
     if isinstance(value, (dict, list)):
+        if id(value) in heights:
+            height = heights[id(value)]
+            if depth + height > 100:
+                raise ValueError(
+                    "workflow contains a cyclic or deeply nested YAML structure"
+                )
+            return height
         active.add(id(value))
-        for child in value.values() if isinstance(value, dict) else value:
-            validate_data(child, active, depth + 1)
-        active.remove(id(value))
+        try:
+            children = value.values() if isinstance(value, dict) else value
+            height = max(
+                (
+                    1 + validate_data(child, active, heights, depth + 1)
+                    for child in children
+                ),
+                default=0,
+            )
+        finally:
+            active.remove(id(value))
+        heights[id(value)] = height
+        return height
     elif (
         not isinstance(value, (str, int, float, bool, type(None)))
         or isinstance(value, float)
         and not math.isfinite(value)
     ):
         raise ValueError("workflow contains an unsupported YAML value")
+    return 0
+
+
+def is_cache_step(step):
+    action = str(step.get("uses", "")).split("@")[0].lower()
+    inputs = as_map(step.get("with"))
+    if "if" in step and condition(step["if"]) == "never":
+        return False
+    if str(inputs.get("lookup-only", "false")).lower() == "true":
+        return False
+    return action in {
+        "actions/cache",
+        "actions/cache/restore",
+        "actions/cache/save",
+    } or (
+        action in {"actions/setup-node", "actions/setup-python"}
+        and bool(inputs.get("cache"))
+    )
 
 
 def parse(path: Path, root: Path):
@@ -190,6 +226,8 @@ def parse(path: Path, root: Path):
                     f"job {job_id}: expected a list of step mappings",
                 )
             )
+            continue
+        if not any(is_cache_step(step) for step in steps):
             continue
         rows, dynamic = matrix_rows(as_map(job.get("strategy")).get("matrix"))
         if dynamic:

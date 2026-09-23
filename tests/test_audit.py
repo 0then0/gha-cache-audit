@@ -4,7 +4,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from gha_cache_audit import workflow
 from gha_cache_audit.analysis import analyze
 from gha_cache_audit.cli import main
 from gha_cache_audit.expressions import dependencies
@@ -236,6 +238,59 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(findings[0].missing, ["src/**"])
         self.assertFalse(
             self.scan(text.replace("'src/a.ts'", "'src/a.ts', 'src/b.ts'"), "medium")
+        )
+
+    def test_build_source_globs_follow_hashfiles(self):
+        (self.root / "src/nested").mkdir(parents=True)
+        (self.root / "src/a.ts").write_text("a")
+        (self.root / "src/nested/b.ts").write_text("b")
+        text = self.fixture("build").replace("'package-lock.json'", "'src/*.ts'")
+        self.assertEqual(
+            [f.rule_id for f in self.scan(text, "medium")], ["GHA-CACHE-004"]
+        )
+        self.assertFalse(
+            self.scan(text.replace("'src/*.ts'", "'src/**/*.ts'"), "medium")
+        )
+        (self.root / "src/nested/b.ts").unlink()
+        self.assertFalse(
+            self.scan(text.replace("'src/*.ts'", "'src/**/*.ts'"), "medium")
+        )
+        self.assertFalse(self.scan(text.replace("'src/*.ts'", "'/src/*.ts'"), "medium"))
+        self.assertFalse(self.scan(text.replace("'src/*.ts'", "'src'"), "medium"))
+        self.assertFalse(self.scan(text.replace("'src/*.ts'", "'src/'"), "medium"))
+
+    def test_hashfiles_pattern_order_and_call_boundaries(self):
+        (self.root / "src").mkdir()
+        (self.root / "src/a.ts").write_text("a")
+        text = self.fixture("build").replace("'package-lock.json'", "'src/a.ts'")
+        excluded = text.replace("'src/a.ts'", "'src/a.ts', '!src/a.ts'")
+        self.assertEqual(
+            [f.rule_id for f in self.scan(excluded, "medium")],
+            ["GHA-CACHE-004"],
+        )
+        self.assertEqual(
+            [
+                f.rule_id
+                for f in self.scan(
+                    text.replace("'src/a.ts'", "'src/**', '!src'"), "medium"
+                )
+            ],
+            ["GHA-CACHE-004"],
+        )
+        self.assertFalse(
+            self.scan(
+                text.replace("'src/a.ts'", "'src/a.ts', '!src/a.ts', 'src/a.ts'"),
+                "medium",
+            )
+        )
+        self.assertFalse(
+            self.scan(
+                text.replace(
+                    "hashFiles('src/a.ts')",
+                    "hashFiles('src/a.ts') }}-${{ hashFiles('src/a.ts', '!src/a.ts')",
+                ),
+                "medium",
+            )
         )
 
     def test_incremental_build_configuration(self):
@@ -562,6 +617,59 @@ class AuditTests(unittest.TestCase):
         self.assertTrue(diagnostics)
         self.assertFalse([f for c in caches for f in analyze(c, self.root)])
 
+    def test_jobs_without_cache_do_not_block_analysis(self):
+        for job in (
+            "    if: github.ref == 'refs/heads/main'\n",
+            "    strategy:\n      matrix: ${{ fromJSON(inputs.matrix) }}\n",
+        ):
+            with self.subTest(job=job):
+                self.write(
+                    "jobs:\n  lint:\n"
+                    + job
+                    + "    runs-on: ubuntu-latest\n    steps:\n      - run: echo ok\n"
+                )
+                status, output = self.cli("--format", "json")
+                self.assertEqual(status, 0)
+                self.assertEqual(json.loads(output)["diagnostics"], [])
+
+    def test_yaml_aliases_are_checked_once_and_cycles_rejected(self):
+        aliases = "a0: &a0 [0]\n" + "".join(
+            f"a{i}: &a{i} [*a{i - 1}, *a{i - 1}]\n" for i in range(1, 25)
+        )
+        original_validate = workflow.validate_data
+        visits = 0
+
+        def bounded_validate(*args, **kwargs):
+            nonlocal visits
+            visits += 1
+            if visits > 200:
+                raise AssertionError("YAML alias validation repeated a subtree")
+            return original_validate(*args, **kwargs)
+
+        with patch.object(workflow, "validate_data", bounded_validate):
+            _, diagnostics = parse(self.write(aliases + "jobs: {}\n"), self.root)
+        self.assertEqual(diagnostics, [])
+        self.assertLessEqual(visits, 200)
+        _, diagnostics = parse(
+            self.write("env: &cycle [*cycle]\njobs: {}\n"), self.root
+        )
+        self.assertTrue(
+            any("cyclic" in d.message or "recursive" in d.message for d in diagnostics)
+        )
+        deep = (
+            "base: &base "
+            + "[" * 50
+            + "0"
+            + "]" * 50
+            + "\ndeep: "
+            + "[" * 60
+            + "*base"
+            + "]" * 60
+            + "\njobs: {}\n"
+        )
+        _, diagnostics = parse(self.write(deep), self.root)
+        self.assertTrue(any("deeply nested" in d.message for d in diagnostics))
+
     def cli(self, *args):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
@@ -642,7 +750,7 @@ class ExpressionTests(unittest.TestCase):
             "${{ format('a}}b''c-{0}', matrix.node) }}-${{ hashFiles('pnpm-lock.yaml', 'web/**') }}"
         )
         self.assertEqual(result.refs, {"matrix.node"})
-        self.assertEqual(result.files, {"pnpm-lock.yaml", "web/**"})
+        self.assertEqual(result.files, [("pnpm-lock.yaml", "web/**")])
 
     def test_cycles_and_unknown(self):
         self.assertTrue(

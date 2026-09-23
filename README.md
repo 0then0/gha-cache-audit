@@ -138,20 +138,20 @@ its key to hash every source file.
 
 Limitations prioritize fewer false positives over coverage:
 
-- Dynamic matrices and reusable workflow **calls** are reported as incomplete;
-  reusable workflow files with ordinary jobs can be analyzed directly. Inputs
-  and secrets are not resolved across callers.
+- Dynamic matrices in cache-bearing jobs and reusable workflow **calls** are
+  reported as incomplete; reusable workflow files with ordinary jobs can be
+  analyzed directly. Inputs and secrets are not resolved across callers.
 - Unknown key references (including arbitrary step outputs), conditional or
-  multiple runtime setup steps, conditional jobs/cache steps, and opaque paths
-  are conservatively skipped with a diagnostic and exit code 2. Statically
-  `true`, `false` and `always()` conditions are handled directly.
+  multiple runtime setup steps, conditional jobs with caches, conditional cache
+  steps, and opaque paths are conservatively skipped with a diagnostic and exit
+  code 2. Statically `true`, `false` and `always()` conditions are handled directly.
 - No shell interpretation, transitive task graph, remote actions, containers,
   arbitrary package-manager scripts or dynamic `GITHUB_ENV` evaluation.
 - An expression dependency is not proof of an injective expression. Complex
   expressions may hide a collision that this tool misses.
 - File glob support is a conservative approximation, not full `@actions/glob`.
-  Positive patterns and `!` exclusions are recognized; unusual patterns can be
-  missed. Runtime version files and arbitrary configuration-file build graphs
+  Ordered positive patterns and `!` exclusions are recognized; unusual patterns
+  can be missed. Runtime version files and arbitrary configuration-file build graphs
   are not inferred. Use explicit artifact inputs where necessary.
 - No finding does not prove a cache is safe. Findings describe potential reuse,
   not proof that a cached directory necessarily contains incompatible files.
