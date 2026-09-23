@@ -11,6 +11,25 @@ LOCKS = {
     "node": ("package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock"),
     "python": ("uv.lock", "poetry.lock", "Pipfile.lock", "requirements.txt"),
 }
+BUILD_CONFIGS = (
+    "package.json",
+    "tsconfig.json",
+    "webpack.config.js",
+    "vite.config.js",
+    "vite.config.ts",
+    "next.config.js",
+    "next.config.mjs",
+    "next.config.ts",
+)
+
+
+def scalar(value):
+    """Values interpolated into action inputs and cache keys are strings."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return str(value).lower()
+    return str(value)
 
 
 def matches(path: str, pattern: str) -> bool:
@@ -37,12 +56,14 @@ def classify(path: str):
         return "python", normalized
     if name in {"dist", "build"}:
         return "build", normalized
+    if normalized.endswith("/.next/cache") or normalized == ".next/cache":
+        return "incremental", normalized
     return None
 
 
 def varying(rows):
     names = set().union(*(r.keys() for r in rows)) if rows else set()
-    return {name for name in names if len({repr(r.get(name)) for r in rows}) > 1}
+    return {name for name in names if len({scalar(r.get(name)) for r in rows}) > 1}
 
 
 def platform(row, runner, aliases):
@@ -72,17 +93,18 @@ def collision(rows, required, covered, runner="", aliases=None):
                 a, b = platform(left, runner, aliases), platform(right, runner, aliases)
                 if a is not None and b is not None and a != b:
                     continue
-            if left.get(required) != right.get(required) and all(
-                left.get(n) == right.get(n) for n in names
+            if scalar(left.get(required)) != scalar(right.get(required)) and all(
+                scalar(left.get(n)) == scalar(right.get(n)) for n in names
             ):
                 return True
     return False
 
 
-def platform_collision(rows, covered, runner, aliases):
+def platform_pairs(rows, covered, runner, aliases):
     if "runner.os" in covered:
-        return False
+        return set()
     names = {r[7:] for r in covered if r.startswith("matrix.")}
+    pairs = set()
     for index, left in enumerate(rows):
         for right in rows[index + 1 :]:
             a, b = platform(left, runner, aliases), platform(right, runner, aliases)
@@ -90,10 +112,10 @@ def platform_collision(rows, covered, runner, aliases):
                 a is not None
                 and b is not None
                 and a != b
-                and all(left.get(n) == right.get(n) for n in names)
+                and all(scalar(left.get(n)) == scalar(right.get(n)) for n in names)
             ):
-                return True
-    return False
+                pairs.add(frozenset((a, b)))
+    return pairs
 
 
 def local_files(root: Path, parent: str, names):
@@ -102,7 +124,37 @@ def local_files(root: Path, parent: str, names):
     ]
 
 
-def analyze(cache: Cache, root: Path, overrides=()) -> list[Finding]:
+def npm_ignores_lock(commands, npmrc: Path) -> bool:
+    installs = []
+    for command in commands:
+        for line in str(command.get("run", "")).splitlines():
+            line = line.strip()
+            if re.match(r"^npm\s+ci\b", line):
+                return False
+            if re.match(r"^npm\s+(?:install|i)\b", line):
+                if any(operator in line for operator in ("&&", ";", "|")):
+                    return False
+                installs.append(line)
+    if not installs:
+        return False
+    if all(
+        re.search(r"(?:--no-package-lock\b|--package-lock=false\b)", line)
+        for line in installs
+    ):
+        return True
+    return (
+        npmrc.is_file()
+        and not any("--package-lock=true" in line for line in installs)
+        and bool(
+            re.search(
+                r"(?m)^\s*package-lock\s*=\s*false\s*$",
+                npmrc.read_text(encoding="utf-8"),
+            )
+        )
+    )
+
+
+def analyze(cache: Cache, root: Path, overrides=(), source_cache=None) -> list[Finding]:
     findings = []
     key = dependencies(cache.key, cache.aliases)
     if cache.implicit or cache.uncertain or key.opaque:
@@ -131,9 +183,9 @@ def analyze(cache: Cache, root: Path, overrides=()) -> list[Finding]:
         if custom:
             for dependency in custom.get("depends-on", []):
                 if dependency.startswith(("matrix.", "runner.", "env.")):
-                    required.update(
-                        dependencies("${{ " + dependency + " }}", cache.aliases).refs
-                    )
+                    resolved = dependencies("${{ " + dependency + " }}", cache.aliases)
+                    other_refs = resolved.refs - {dependency.lower()}
+                    required.update(other_refs or {dependency.lower()})
         runtime_missing = sorted(
             r
             for r in required
@@ -186,31 +238,14 @@ def analyze(cache: Cache, root: Path, overrides=()) -> list[Finding]:
             for r in platform_refs
             if collision(cache.matrix, r[7:], covered, cache.runner, cache.aliases)
         ]
-        if (
-            kind in {"node", "python"}
-            and platform_missing
-            and not key.refs & {"runner.os"}
-        ):
-            # OS differences must be observed, not merely a differently named runner.
-            values = {
-                str(row.get(r[7:], "")).lower()
-                for row in cache.matrix
-                for r in platform_missing
-            }
-            systems = {
-                "linux"
-                if v.startswith("ubuntu-")
-                else "macos"
-                if v.startswith("macos-")
-                else "windows"
-                if v.startswith("windows-")
-                else "unknown"
-                for v in values
-            }
-            if len(systems - {"unknown"}) > 1:
+        if kind in {"node", "python"} and "runner.os" not in key.refs:
+            crossing = platform_pairs(
+                cache.matrix, covered, cache.runner, cache.aliases
+            )
+            if platform_missing and crossing:
                 confidence = (
                     "high"
-                    if cache.cross_os or {"linux", "macos"} <= systems
+                    if cache.cross_os or frozenset(("linux", "macos")) in crossing
                     else "medium"
                 )
                 add(
@@ -221,7 +256,29 @@ def analyze(cache: Cache, root: Path, overrides=()) -> list[Finding]:
                     "The key does not distinguish these platforms. Cache archive compatibility may also limit reuse.",
                     "Include ${{ runner.os }} in the cache key.",
                 )
+            elif (
+                not platform_refs
+                and not revision_key
+                and not hashed(cache.file, key.files)
+                and platform({}, cache.runner, cache.aliases)
+            ):
+                add(
+                    "GHA-CACHE-002",
+                    "medium",
+                    ["runner.os"],
+                    f"{original_path} is installed on a fixed runner platform, but its key has no OS input. "
+                    "Changing runs-on in a later workflow revision may reuse an older platform's cache.",
+                    "Include ${{ runner.os }} in the cache key.",
+                )
         expected = local_files(root, parent, LOCKS.get(kind, ()))
+        if (
+            kind == "node"
+            and any(PurePosixPath(f).name == "package-lock.json" for f in expected)
+            and npm_ignores_lock(cache.commands, root / parent / ".npmrc")
+        ):
+            expected = [
+                f for f in expected if PurePosixPath(f).name != "package-lock.json"
+            ]
         if custom:
             expected += [
                 d
@@ -256,38 +313,49 @@ def analyze(cache: Cache, root: Path, overrides=()) -> list[Finding]:
                     missing,
                     "The cache key omits explicitly configured artifact inputs.",
                 )
-        if kind == "build":
+        if kind in {"build", "incremental"}:
+            project = (
+                str(PurePosixPath(path).parent.parent)
+                if kind == "incremental"
+                else parent
+            )
             build_commands = [
                 c
                 for c in cache.commands
                 if str(c.get("working-directory", ".")).removeprefix("./").rstrip("/")
-                == parent
+                == project
                 and re.search(
-                    r"\b(?:npm run build|pnpm (?:run )?build|yarn (?:run )?build)\b",
+                    r"\b(?:npm run build|pnpm (?:run )?build|yarn (?:run )?build|next build)\b",
                     str(c.get("run", "")),
                 )
             ]
-            sources = (
-                [
-                    f.relative_to(root).as_posix()
-                    for f in (root / parent / "src").rglob("*")
-                    if f.is_file()
-                ]
-                if (root / parent / "src").is_dir()
-                else []
-            )
-            if (
-                not revision_key
-                and build_commands
-                and sources
-                and not any(hashed(f, key.files) for f in sources)
-            ):
+            missing_build = []
+            if kind == "build":
+                sources = None if source_cache is None else source_cache.get(project)
+                if sources is None:
+                    source_root = root / project / "src"
+                    sources = (
+                        [
+                            f.relative_to(root).as_posix()
+                            for f in source_root.rglob("*")
+                            if f.is_file()
+                        ]
+                        if source_root.is_dir()
+                        else []
+                    )
+                    if source_cache is not None:
+                        source_cache[project] = sources
+                if sources and not any(hashed(f, key.files) for f in sources):
+                    missing_build.append(str(PurePosixPath(project) / "src/**"))
+            configs = local_files(root, project, BUILD_CONFIGS)
+            missing_build.extend(f for f in configs if not hashed(f, key.files))
+            if not revision_key and build_commands and missing_build:
                 add(
                     "GHA-CACHE-004",
                     "medium",
-                    [str(PurePosixPath(parent) / "src/**")],
-                    f"A build command runs in {parent} and source files exist, but {original_path}'s key hashes none of them. "
-                    "This matters if restored output is consumed without a complete rebuild.",
+                    missing_build,
+                    f"A build command runs in {project}, but {original_path}'s key does not hash these source/configuration inputs. "
+                    "Restored output may be stale if a later step consumes it without a complete rebuild.",
                 )
         if kind in {"node", "python"}:
             protected = required | platform_refs
@@ -310,7 +378,7 @@ def analyze(cache: Cache, root: Path, overrides=()) -> list[Finding]:
                         cache.aliases,
                     )
                 )
-                if "runner.os" in key.refs and platform_collision(
+                if "runner.os" in key.refs and platform_pairs(
                     cache.matrix,
                     partial.refs | path_inputs.refs,
                     cache.runner,

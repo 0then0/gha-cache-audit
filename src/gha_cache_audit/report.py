@@ -8,6 +8,20 @@ from . import __version__
 from .model import RULES
 
 
+def cache_summary(cache):
+    return {
+        "file": cache.file,
+        "line": cache.line,
+        "job": cache.job,
+        "action": cache.action,
+        "paths": cache.paths,
+        "key": cache.key,
+        "restore_keys": cache.restore_keys,
+        "implicit": cache.implicit,
+        "uncertain": cache.uncertain,
+    }
+
+
 def render(findings, diagnostics, caches, output_format):
     if output_format == "json":
         return json.dumps(
@@ -15,7 +29,7 @@ def render(findings, diagnostics, caches, output_format):
                 "version": __version__,
                 "findings": [asdict(f) for f in findings],
                 "diagnostics": [asdict(d) for d in diagnostics],
-                "caches": [asdict(c) for c in caches],
+                "caches": [cache_summary(c) for c in caches],
             },
             indent=2,
         )

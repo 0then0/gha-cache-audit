@@ -80,12 +80,17 @@ Default confidence is `high`; `medium` includes both levels.
   multi-OS matrix, or omit an explicitly configured artifact input. Linux/macOS
   variation and explicitly enabled cross-OS archives are high; Windows mixing
   without that flag is medium because archive versions can partition caches.
+  A single fixed OS without `runner.os` is medium because a later workflow
+  revision can move the job to another OS while preserving its key.
 - **GHA-CACHE-003**: an installed dependency directory has one identifiable local
   lockfile/requirements file and the key does not hash it. High. Competing
   lockfiles are ambiguous and skipped. A package manifest is not a lockfile.
+  An explicit npm install without package-lock use is not charged with a
+  `package-lock.json` dependency.
 - **GHA-CACHE-004**: `dist`/`build`, a build command in the same directory and
-  existing `src` files, but no source file contributes to the key. Medium: the
-  tool cannot prove whether later commands rebuild the output.
+  existing `src` or known configuration files absent from the key. For
+  `.next/cache`, only an identifiable build configuration file is checked.
+  Medium: the tool cannot prove whether later commands rebuild the output.
 - **GHA-CACHE-005**: a restore prefix drops runtime/platform partitioning retained
   by the primary key. Medium: later installation might repair restored files.
   Dropping only the lockfile hash is deliberately not reported.
@@ -137,15 +142,17 @@ Limitations prioritize fewer false positives over coverage:
   reusable workflow files with ordinary jobs can be analyzed directly. Inputs
   and secrets are not resolved across callers.
 - Unknown key references (including arbitrary step outputs), conditional or
-  multiple runtime setup steps, conditional jobs/cache steps, and opaque paths are conservatively skipped.
+  multiple runtime setup steps, conditional jobs/cache steps, and opaque paths
+  are conservatively skipped with a diagnostic and exit code 2. Statically
+  `true`, `false` and `always()` conditions are handled directly.
 - No shell interpretation, transitive task graph, remote actions, containers,
   arbitrary package-manager scripts or dynamic `GITHUB_ENV` evaluation.
 - An expression dependency is not proof of an injective expression. Complex
   expressions may hide a collision that this tool misses.
 - File glob support is a conservative approximation, not full `@actions/glob`.
   Positive patterns and `!` exclusions are recognized; unusual patterns can be
-  missed. Runtime version files and configuration-file build graphs are not
-  inferred. Use explicit artifact inputs where necessary.
+  missed. Runtime version files and arbitrary configuration-file build graphs
+  are not inferred. Use explicit artifact inputs where necessary.
 - No finding does not prove a cache is safe. Findings describe potential reuse,
   not proof that a cached directory necessarily contains incompatible files.
 
@@ -168,7 +175,9 @@ reason = "Installation always repairs a partial cache match."
 Artifact paths match exactly. Suppression file/path fields accept shell-style
 globs and default to `*`; each suppression requires a non-empty reason.
 Suppressions filter findings, never parsing diagnostics. Rule IDs are stable.
-JSON includes cache inventories, evidence, missing inputs and optional suggestions.
+JSON includes compact cache inventories, evidence, missing inputs and optional
+suggestions. Raw commands and environment mappings are excluded from the
+inventory so multiple caches do not duplicate large job bodies.
 SARIF 2.1.0 includes rules, locations, confidence and diagnostic notifications.
 
 ## GitHub Action

@@ -81,6 +81,7 @@ def main(argv=None):
     parser.add_argument("--config", type=Path)
     args = parser.parse_args(argv)
     caches, findings, diagnostics = [], [], []
+    source_cache = {}
     try:
         root, paths = discover(Path(args.path))
         if args.config and not args.config.is_file():
@@ -95,7 +96,9 @@ def main(argv=None):
             caches.extend(found)
             diagnostics.extend(errors)
             for cache in found:
-                for finding in analyze(cache, root, config.get("artifacts", [])):
+                for finding in analyze(
+                    cache, root, config.get("artifacts", []), source_cache
+                ):
                     if args.min_confidence == "high" and finding.confidence != "high":
                         continue
                     if any(

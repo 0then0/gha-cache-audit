@@ -64,6 +64,19 @@ def lines(value):
     return [line.strip() for line in str(value or "").splitlines() if line.strip()]
 
 
+def condition(value):
+    if value is None:
+        return "unknown"
+    expression = str(value).strip().lower()
+    if expression.startswith("${{") and expression.endswith("}}"):
+        expression = expression[3:-2].strip()
+    if expression in {"true", "always()"}:
+        return "always"
+    if expression == "false":
+        return "never"
+    return "unknown"
+
+
 def matrix_rows(value):
     if value is None:
         return [{}], False
@@ -165,6 +178,9 @@ def parse(path: Path, root: Path):
                 )
             )
             continue
+        job_condition = condition(job["if"]) if "if" in job else "always"
+        if job_condition == "never":
+            continue
         steps = job.get("steps", [])
         if not isinstance(steps, list) or any(not isinstance(s, dict) for s in steps):
             diagnostics.append(
@@ -211,10 +227,30 @@ def parse(path: Path, root: Path):
                     ),
                 )
                 commands.append(command)
-        uncertain = dynamic or "if" in job
+        uncertain = dynamic or job_condition == "unknown"
+        if job_condition == "unknown":
+            diagnostics.append(
+                Diagnostic(
+                    name,
+                    getattr(job, "line", 1),
+                    f"job {job_id}: conditional job; cache analysis skipped",
+                )
+            )
         for kind, candidates in setups.items():
-            if len(candidates) != 1 or "if" in candidates[0]:
+            setup_condition = (
+                condition(candidates[0]["if"])
+                if len(candidates) == 1 and "if" in candidates[0]
+                else "always"
+            )
+            if len(candidates) != 1 or setup_condition != "always":
                 uncertain = True
+                diagnostics.append(
+                    Diagnostic(
+                        name,
+                        getattr(job, "line", 1),
+                        f"job {job_id}: conditional or multiple runtime setup steps; cache analysis skipped",
+                    )
+                )
                 continue
             setup = candidates[0]
             inputs = as_map(setup.get("with"))
@@ -252,7 +288,17 @@ def parse(path: Path, root: Path):
                 and not implicit
             ):
                 continue
-            if "if" in step:
+            step_condition = condition(step["if"]) if "if" in step else "always"
+            if step_condition == "never":
+                continue
+            if step_condition == "unknown":
+                diagnostics.append(
+                    Diagnostic(
+                        name,
+                        getattr(step, "line", 1),
+                        "conditional cache step; analysis skipped",
+                    )
+                )
                 continue
             if str(inputs.get("lookup-only", "false")).lower() == "true":
                 continue
@@ -275,6 +321,17 @@ def parse(path: Path, root: Path):
                         name,
                         getattr(step, "line", 1),
                         "cache definition requires non-empty path and key",
+                    )
+                )
+                continue
+            if not implicit and (
+                dependencies(key, env).opaque or any("${{" in path for path in paths)
+            ):
+                diagnostics.append(
+                    Diagnostic(
+                        name,
+                        getattr(step, "line", 1),
+                        "cache key or path has unsupported expressions; analysis skipped",
                     )
                 )
                 continue

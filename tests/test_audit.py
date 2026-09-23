@@ -30,10 +30,15 @@ class AuditTests(unittest.TestCase):
     def fixture(self, name):
         return (FIXTURES / f"{name}.yml").read_text()
 
-    def scan(self, text):
+    def scan(self, text, confidence="high"):
         caches, diagnostics = parse(self.write(text), self.root)
         self.assertEqual(diagnostics, [])
-        return [f for c in caches for f in analyze(c, self.root)]
+        return [
+            f
+            for c in caches
+            for f in analyze(c, self.root)
+            if confidence == "medium" or f.confidence == "high"
+        ]
 
     def test_safe_fixture(self):
         self.assertFalse(self.scan(self.fixture("safe")))
@@ -65,9 +70,48 @@ class AuditTests(unittest.TestCase):
             )
         )
 
+    def test_os_requires_a_cross_platform_key_collision(self):
+        text = (
+            self.fixture("os")
+            .replace(
+                "        os: [ubuntu-latest, macos-latest]",
+                "        include:\n"
+                "          - {os: ubuntu-latest, shard: a}\n"
+                "          - {os: ubuntu-24.04, shard: a}\n"
+                "          - {os: macos-latest, shard: b}",
+            )
+            .replace("key: deps-", "key: deps-${{ matrix.shard }}-")
+        )
+        self.assertFalse(self.scan(text))
+        self.assertEqual(
+            [f.rule_id for f in self.scan(text.replace("shard: b", "shard: a"))],
+            ["GHA-CACHE-002"],
+        )
+
+    def test_fixed_os_only_medium_and_revision_key_is_safe(self):
+        text = self.fixture("lockfile").replace("yarn.lock", "package-lock.json")
+        self.assertFalse(self.scan(text))
+        self.assertEqual(
+            [f.rule_id for f in self.scan(text, "medium")], ["GHA-CACHE-002"]
+        )
+        self.assertFalse(
+            self.scan(
+                text.replace("key: deps-", "key: deps-${{ github.sha }}-"), "medium"
+            )
+        )
+        self.assertFalse(
+            self.scan(
+                text.replace(
+                    "key: deps-",
+                    "key: deps-${{ hashFiles('.github/workflows/test.yml') }}-",
+                ),
+                "medium",
+            )
+        )
+
     def test_windows_archive_confidence(self):
         text = self.fixture("os").replace("macos-latest", "windows-latest")
-        self.assertEqual(self.scan(text)[0].confidence, "medium")
+        self.assertEqual(self.scan(text, "medium")[0].confidence, "medium")
         self.assertEqual(
             self.scan(
                 text.replace(
@@ -91,29 +135,109 @@ class AuditTests(unittest.TestCase):
             )
         )
 
+    def test_lockfile_ignored_by_npm(self):
+        text = self.fixture("lockfile").replace(
+            "    steps:", "    steps:\n      - run: npm install --package-lock=false"
+        )
+        self.assertFalse(self.scan(text))
+        self.assertFalse(
+            self.scan(text.replace("--package-lock=false", "--no-package-lock"))
+        )
+        self.assertEqual(
+            [f.rule_id for f in self.scan(text.replace("--package-lock=false", ""))],
+            ["GHA-CACHE-003"],
+        )
+        self.assertEqual(
+            [
+                f.rule_id
+                for f in self.scan(
+                    text.replace(
+                        "- run: npm install --package-lock=false",
+                        "- run: |\n          npm install --package-lock=false\n          npm ci",
+                    )
+                )
+            ],
+            ["GHA-CACHE-003"],
+        )
+        self.assertEqual(
+            [
+                f.rule_id
+                for f in self.scan(
+                    text.replace("- run: npm install", "- run: echo npm install")
+                )
+            ],
+            ["GHA-CACHE-003"],
+        )
+        (self.root / ".npmrc").write_text("package-lock=false\n")
+        self.assertFalse(self.scan(text.replace(" --package-lock=false", "")))
+        self.assertEqual(
+            [
+                f.rule_id
+                for f in self.scan(
+                    text.replace("--package-lock=false", "--package-lock=true")
+                )
+            ],
+            ["GHA-CACHE-003"],
+        )
+
     def test_build_positive_and_negative(self):
         (self.root / "src").mkdir()
         (self.root / "src/index.ts").write_text("export const n = 1")
         text = self.fixture("build")
-        findings = self.scan(text)
+        findings = self.scan(text, "medium")
         self.assertEqual([f.rule_id for f in findings], ["GHA-CACHE-004"])
         self.assertEqual(findings[0].confidence, "medium")
         self.assertFalse(
             self.scan(
-                text.replace("'package-lock.json'", "'package-lock.json', 'src/**'")
+                text.replace("'package-lock.json'", "'package-lock.json', 'src/**'"),
+                "medium",
             )
         )
-        self.assertFalse(self.scan(text.replace("path: dist", "path: .next/cache")))
-        self.assertFalse(self.scan(text.replace("npm run build", "echo build")))
+        self.assertFalse(
+            self.scan(text.replace("path: dist", "path: .next/cache"), "medium")
+        )
+        self.assertFalse(
+            self.scan(text.replace("npm run build", "echo build"), "medium")
+        )
+
+    def test_build_configuration_invalidation(self):
+        (self.root / "src").mkdir()
+        (self.root / "src/index.ts").write_text("export const n = 1")
+        (self.root / "vite.config.ts").write_text("export default {}")
+        text = self.fixture("build").replace(
+            "'package-lock.json'", "'package-lock.json', 'src/**'"
+        )
+        findings = self.scan(text, "medium")
+        self.assertEqual([f.rule_id for f in findings], ["GHA-CACHE-004"])
+        self.assertEqual(findings[0].missing, ["vite.config.ts"])
+        self.assertFalse(
+            self.scan(text.replace("'src/**'", "'src/**', 'vite.config.ts'"), "medium")
+        )
+
+    def test_incremental_build_configuration(self):
+        (self.root / "next.config.js").write_text("module.exports = {}")
+        text = self.fixture("build").replace("path: dist", "path: .next/cache")
+        self.assertEqual(
+            [f.rule_id for f in self.scan(text, "medium")], ["GHA-CACHE-004"]
+        )
+        self.assertFalse(
+            self.scan(text.replace("'package-lock.json'", "'next.config.js'"), "medium")
+        )
 
     def test_restore_positive_and_negative(self):
-        text = self.fixture("restore")
-        self.assertEqual([f.rule_id for f in self.scan(text)], ["GHA-CACHE-005"])
+        text = self.fixture("restore").replace(
+            "key: deps-", "key: deps-${{ runner.os }}-"
+        )
+        self.assertEqual(
+            [f.rule_id for f in self.scan(text, "medium")], ["GHA-CACHE-005"]
+        )
         self.assertFalse(
             self.scan(
                 text.replace(
-                    "restore-keys: deps-", "restore-keys: deps-${{ matrix.node }}-"
-                )
+                    "restore-keys: deps-",
+                    "restore-keys: deps-${{ runner.os }}-${{ matrix.node }}-",
+                ),
+                "medium",
             )
         )
 
@@ -121,15 +245,20 @@ class AuditTests(unittest.TestCase):
         text = self.fixture("os").replace(
             "key: deps-", "restore-keys: deps-\n          key: deps-${{ runner.os }}-"
         )
-        self.assertEqual([f.rule_id for f in self.scan(text)], ["GHA-CACHE-005"])
+        self.assertEqual(
+            [f.rule_id for f in self.scan(text, "medium")], ["GHA-CACHE-005"]
+        )
         self.assertFalse(
             self.scan(
                 text.replace(
                     "restore-keys: deps-", "restore-keys: deps-${{ runner.os }}-"
-                )
+                ),
+                "medium",
             )
         )
-        self.assertFalse(self.scan(text.replace("macos-latest", "ubuntu-24.04")))
+        self.assertFalse(
+            self.scan(text.replace("macos-latest", "ubuntu-24.04"), "medium")
+        )
 
     def test_builtins_inventory(self):
         caches, diagnostics = parse(self.write(self.fixture("builtin")), self.root)
@@ -151,6 +280,34 @@ class AuditTests(unittest.TestCase):
         )
         self.assertFalse(
             self.scan(text.replace("key: deps-", "key: deps-${{ env.NODE }}-"))
+        )
+
+    def test_explicit_env_artifact_input(self):
+        text = self.fixture("matrix").replace("node_modules", ".cache/compiler")
+        text = text.replace("    steps:", "    env:\n      COMPILER: clang\n    steps:")
+        overrides = [{"path": ".cache/compiler", "depends-on": ["env.COMPILER"]}]
+        caches, diagnostics = parse(self.write(text), self.root)
+        self.assertFalse(diagnostics)
+        findings = analyze(caches[0], self.root, overrides)
+        self.assertEqual(
+            [(f.rule_id, f.missing) for f in findings],
+            [("GHA-CACHE-002", ["env.compiler"])],
+        )
+        (self.root / ".gha-cache-audit.toml").write_text(
+            '[[artifacts]]\npath=".cache/compiler"\ndepends-on=["env.COMPILER"]\n'
+        )
+        status, output = self.cli("--format", "json")
+        self.assertEqual(status, 1)
+        self.assertEqual(json.loads(output)["findings"][0]["missing"], ["env.compiler"])
+        safe = text.replace("key: deps-", "key: deps-${{ env.COMPILER }}-")
+        caches, diagnostics = parse(self.write(safe), self.root)
+        self.assertFalse(diagnostics)
+        self.assertFalse(analyze(caches[0], self.root, overrides))
+        dynamic = text.replace("COMPILER: clang", "COMPILER: ${{ matrix.node }}")
+        caches, diagnostics = parse(self.write(dynamic), self.root)
+        self.assertFalse(diagnostics)
+        self.assertEqual(
+            analyze(caches[0], self.root, overrides)[0].missing, ["matrix.node"]
         )
 
     def test_setup_output_alias(self):
@@ -184,7 +341,21 @@ class AuditTests(unittest.TestCase):
             "      - uses: actions/cache@v4",
             "      - if: matrix.node == 22\n        uses: actions/cache@v4",
         )
-        self.assertFalse(self.scan(text))
+        caches, diagnostics = parse(self.write(text), self.root)
+        self.assertFalse([f for c in caches for f in analyze(c, self.root)])
+        self.assertTrue(any("conditional cache step" in d.message for d in diagnostics))
+        self.assertEqual(self.cli()[0], 2)
+        status, output = self.cli("--format", "sarif")
+        self.assertEqual(status, 2)
+        self.assertFalse(
+            json.loads(output)["runs"][0]["invocations"][0]["executionSuccessful"]
+        )
+        always = text.replace("matrix.node == 22", "always()")
+        self.assertEqual([f.rule_id for f in self.scan(always)], ["GHA-CACHE-001"])
+        never = text.replace("matrix.node == 22", "false")
+        caches, diagnostics = parse(self.write(never), self.root)
+        self.assertFalse(caches)
+        self.assertFalse(diagnostics)
 
     def test_runner_os_separates_correlated_runtime_rows(self):
         text = (
@@ -208,24 +379,28 @@ class AuditTests(unittest.TestCase):
         )
 
     def test_yaml_dates_are_strings_in_json(self):
-        self.write(
+        workflow = self.write(
             self.fixture("matrix").replace(
                 "    steps:", "    env:\n      RELEASE_DATE: 2026-09-23\n    steps:"
             )
         )
+        caches, diagnostics = parse(workflow, self.root)
+        self.assertFalse(diagnostics)
+        self.assertEqual(caches[0].aliases["env.release_date"], "2026-09-23")
         status, output = self.cli("--format", "json")
         self.assertEqual(status, 1)
-        self.assertEqual(
-            json.loads(output)["caches"][0]["aliases"]["env.release_date"], "2026-09-23"
-        )
+        self.assertNotIn("aliases", json.loads(output)["caches"][0])
 
     def test_unknown_key_skipped(self):
-        self.assertFalse(
-            self.scan(
-                self.fixture("matrix").replace(
-                    "key: deps-", "key: deps-${{ steps.custom.outputs.key }}-"
-                )
+        workflow = self.write(
+            self.fixture("matrix").replace(
+                "key: deps-", "key: deps-${{ steps.custom.outputs.key }}-"
             )
+        )
+        caches, diagnostics = parse(workflow, self.root)
+        self.assertFalse(caches)
+        self.assertTrue(
+            any("unsupported expressions" in d.message for d in diagnostics)
         )
 
     def test_architecture_is_scoped_to_runtime(self):
@@ -267,6 +442,15 @@ class AuditTests(unittest.TestCase):
                     "node-version: ${{ matrix.node }}", "node-version: 22"
                 )
             )
+        )
+
+    def test_runtime_matrix_values_render_to_same_input(self):
+        text = self.fixture("matrix").replace("[22, 24]", "[22, '22']")
+        self.assertFalse(self.scan(text))
+        self.assertFalse(self.scan(text.replace("[22, '22']", "[true, 'true']")))
+        self.assertEqual(
+            [f.rule_id for f in self.scan(text.replace("[22, '22']", "[22, 24]"))],
+            ["GHA-CACHE-001"],
         )
 
     def test_include_correlation(self):
@@ -350,7 +534,9 @@ class AuditTests(unittest.TestCase):
             "      - uses: actions/setup-node",
             "      - if: success()\n        uses: actions/setup-node",
         )
-        self.assertFalse(self.scan(text))
+        caches, diagnostics = parse(self.write(text), self.root)
+        self.assertTrue(diagnostics)
+        self.assertFalse([f for c in caches for f in analyze(c, self.root)])
 
     def cli(self, *args):
         output = io.StringIO()
@@ -376,6 +562,22 @@ class AuditTests(unittest.TestCase):
         self.write(self.fixture("restore"))
         self.assertEqual(self.cli()[0], 0)
         self.assertEqual(self.cli("--min-confidence", "medium")[0], 1)
+
+    def test_json_inventory_excludes_repeated_job_internals(self):
+        script = "echo " + "x" * 4000
+        text = self.fixture("matrix").replace(
+            "    steps:", f"    steps:\n      - run: {script}"
+        )
+        cache_block = text[text.index("      - uses: actions/cache") :]
+        self.write(text + cache_block)
+        status, output = self.cli("--format", "json")
+        self.assertEqual(status, 1)
+        inventory = json.loads(output)["caches"]
+        self.assertEqual(len(inventory), 2)
+        self.assertTrue(
+            all("commands" not in item and "aliases" not in item for item in inventory)
+        )
+        self.assertNotIn(script, output)
 
     def test_cli_errors_are_structured(self):
         self.write("jobs: [")

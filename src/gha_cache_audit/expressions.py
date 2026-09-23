@@ -111,6 +111,8 @@ def dependencies(value, aliases=None, seen=frozenset()) -> Inputs:
                 if name in seen:
                     result.opaque = True
                 else:
+                    if name.startswith("env."):
+                        result.refs.add(name)
                     result.merge(dependencies(aliases[name], aliases, seen | {name}))
             elif name.startswith(("matrix.", "runner.")) or name in {
                 "github.sha",
