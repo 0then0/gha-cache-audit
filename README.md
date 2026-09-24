@@ -1,5 +1,7 @@
 # GHA Cache Auditor
 
+[![PyPI version](https://img.shields.io/pypi/v/gha-cache-auditor)](https://pypi.org/project/gha-cache-auditor/)
+
 Find GitHub Actions cache keys that miss inputs affecting cached artifacts.
 A YAML linter can validate this workflow, while the same `node_modules` cache
 is still shared by two different Node.js runtimes:
@@ -48,17 +50,20 @@ An appropriate key for this example is
 
 ## Install and run
 
-Python 3.11+ is required. Install a released CLI with `uv` using the wheel attached
-to its GitHub Release:
+Python 3.11+ is required. Install the CLI from PyPI with `uv`:
 
 ```sh
-# Replace X.Y.Z with a published release version.
-VERSION=X.Y.Z
-uv tool install "https://github.com/0then0/gha-cache-audit/releases/download/v${VERSION}/gha_cache_auditor-${VERSION}-py3-none-any.whl"
+uv tool install gha-cache-auditor
 gha-cache-audit .
 ```
 
-Each release also includes a source distribution. To install from a checkout:
+With pip, install it into the active environment:
+
+```sh
+python -m pip install gha-cache-auditor
+```
+
+To install from a checkout instead:
 
 ```sh
 uv tool install .
@@ -70,8 +75,9 @@ gha-cache-audit . --format sarif > cache-audit.sarif
 gha-cache-audit . --min-confidence medium
 ```
 
-`pip install .` also installs the CLI. No token, GitHub App, workflow execution,
-or network access is needed during analysis. The auditor never modifies workflows.
+`pip install .` also installs the CLI from a checkout. No token, GitHub App,
+workflow execution, or network access is needed during analysis. The auditor
+never modifies workflows.
 It scans immediate `.yml`/`.yaml` children of `.github/workflows`, a supplied
 workflow file, or an explicitly supplied workflow directory using
 `--workflow-dir`; with that option, the positional path is the repository root.
@@ -228,10 +234,12 @@ For consumers, use the repository and a full release tag, for example
 tag must match `[project].version` in `pyproject.toml`. Pushing a matching tag
 runs the release jobs after the test and Action smoke jobs pass. A read-only job
 builds and checks the wheel and source distribution, then creates SHA-256
-checksums. A separate publishing job attaches these files to a GitHub Release
-with generated release notes; only that job needs the repository's default
-`GITHUB_TOKEN` with `contents: write`. Failed draft uploads can be retried. The
-workflow does not publish to PyPI.
+checksums. Separate jobs publish the distributions to PyPI and attach them,
+along with the checksums, to a GitHub Release with generated release notes.
+PyPI publishing uses GitHub OIDC Trusted Publishing with the `pypi` environment;
+it does not require a stored PyPI API token. The GitHub Release job alone needs
+the repository's default `GITHUB_TOKEN` with `contents: write`. Failed draft
+uploads can be retried.
 
 To publish a release, update the project version and lockfile, commit the
 change, then push an annotated version tag that points to that commit:
