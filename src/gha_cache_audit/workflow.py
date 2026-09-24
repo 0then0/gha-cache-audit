@@ -322,7 +322,7 @@ def parse(path: Path, root: Path):
             kind = {"actions/setup-node": "node", "actions/setup-python": "python"}.get(
                 action
             )
-            if kind:
+            if kind and condition(step.get("if")) != "never":
                 setups.setdefault(kind, []).append(step)
             if "run" in step and condition(step.get("if")) != "never":
                 command = dict(step)

@@ -82,7 +82,7 @@ def matches(path: str, pattern: str, ignore_case: bool = False) -> bool:
             }
         if not positions:
             return False
-    return bool(positions)
+    return len(parts) in positions
 
 
 def hashed(path: str, pattern_groups: list[tuple[str, ...]], ignore_case=False) -> bool:

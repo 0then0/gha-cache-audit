@@ -11,7 +11,7 @@ from unittest.mock import patch
 import yaml
 
 from gha_cache_audit import workflow
-from gha_cache_audit.analysis import analyze
+from gha_cache_audit.analysis import analyze, matches
 from gha_cache_audit.cli import main
 from gha_cache_audit.expressions import dependencies
 from gha_cache_audit.workflow import matrix_rows, parse
@@ -146,6 +146,24 @@ class AuditTests(unittest.TestCase):
                     "'yarn.lock'", "'**/package-lock.json', '!package-lock.json'"
                 )
             )
+        )
+
+    def test_hashfiles_glob_must_match_the_whole_file_path(self):
+        self.assertFalse(matches("foo/package-lock.json", "foo"))
+        self.assertFalse(matches("foo/package-lock.json/child", "**/package-lock.json"))
+        self.assertTrue(matches("foo/package-lock.json", "**/package-lock.json"))
+
+        web = self.root / "web"
+        web.mkdir()
+        (web / "package-lock.json").write_text("{}")
+        text = (
+            self.fixture("lockfile")
+            .replace("node_modules", "web/node_modules")
+            .replace("hashFiles('yarn.lock')", "hashFiles('web')")
+        )
+        self.assertEqual(
+            [finding.missing for finding in self.scan(text)],
+            [["web/package-lock.json"]],
         )
 
     def test_python_requirements_only_invalidates_cache_when_installed(self):
@@ -395,8 +413,20 @@ class AuditTests(unittest.TestCase):
         self.assertFalse(
             self.scan(text.replace("'src/*.ts'", "'src/**/*.ts'"), "medium")
         )
-        self.assertFalse(self.scan(text.replace("'src/*.ts'", "'src'"), "medium"))
-        self.assertFalse(self.scan(text.replace("'src/*.ts'", "'src/'"), "medium"))
+        self.assertEqual(
+            [
+                finding.rule_id
+                for finding in self.scan(text.replace("'src/*.ts'", "'src'"), "medium")
+            ],
+            ["GHA-CACHE-004"],
+        )
+        self.assertEqual(
+            [
+                finding.rule_id
+                for finding in self.scan(text.replace("'src/*.ts'", "'src/'"), "medium")
+            ],
+            ["GHA-CACHE-004"],
+        )
 
     def test_root_relative_hashfiles_pattern_is_supported(self):
         text = self.fixture("lockfile").replace("'yarn.lock'", "'/package-lock.json'")
@@ -713,14 +743,13 @@ class AuditTests(unittest.TestCase):
             [f.rule_id for f in self.scan(excluded, "medium")],
             ["GHA-CACHE-004"],
         )
-        self.assertEqual(
+        self.assertFalse(
             [
                 f.rule_id
                 for f in self.scan(
                     text.replace("'src/a.ts'", "'src/**', '!src'"), "medium"
                 )
-            ],
-            ["GHA-CACHE-004"],
+            ]
         )
         self.assertFalse(
             self.scan(
@@ -1054,6 +1083,25 @@ class AuditTests(unittest.TestCase):
         caches, diagnostics = parse(self.write(text), self.root)
         self.assertTrue(diagnostics)
         self.assertFalse([f for c in caches for f in analyze(c, self.root)])
+
+        text = self.fixture("matrix").replace(
+            "      - uses: actions/setup-node",
+            "      - if: false\n"
+            "        uses: actions/setup-node@v6\n"
+            "        with:\n"
+            "          node-version: 20\n"
+            "      - uses: actions/setup-node",
+            1,
+        )
+        caches, diagnostics = parse(self.write(text), self.root)
+        self.assertFalse(diagnostics)
+        findings = [
+            finding for cache in caches for finding in analyze(cache, self.root)
+        ]
+        self.assertEqual(
+            [finding.rule_id for finding in findings if finding.confidence == "high"],
+            ["GHA-CACHE-001"],
+        )
         text = self.fixture("matrix").replace(
             "      - uses: actions/setup-node",
             "      - if: success()\n        uses: actions/setup-node",
