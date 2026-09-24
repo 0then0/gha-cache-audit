@@ -179,12 +179,44 @@ class AuditTests(unittest.TestCase):
                 ).replace("pyproject.toml", "requirements.txt-dev")
             )
         )
+        self.assertFalse(
+            self.scan(
+                workflow_text.replace(
+                    "pip install .", "pip install . && echo -r requirements.txt"
+                )
+            )
+        )
         self.assertEqual(
             [
                 f.rule_id
                 for f in self.scan(
                     workflow_text.replace(
                         "pip install .", "pip install -r requirements.txt"
+                    )
+                )
+            ],
+            ["GHA-CACHE-003"],
+        )
+        for command in (
+            "uv pip install -r requirements.txt",
+            "python -m pip install --requirement=./requirements.txt",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(
+                    [
+                        f.rule_id
+                        for f in self.scan(
+                            workflow_text.replace("pip install .", command)
+                        )
+                    ],
+                    ["GHA-CACHE-003"],
+                )
+        self.assertEqual(
+            [
+                f.rule_id
+                for f in self.scan(
+                    workflow_text.replace(
+                        "pip install .", "pip install -r ./requirements.txt"
                     )
                 )
             ],
@@ -456,7 +488,9 @@ class AuditTests(unittest.TestCase):
             link.symlink_to(outside, target_is_directory=True)
         except (NotImplementedError, OSError) as exc:
             self.skipTest(f"directory symlinks are unavailable: {exc}")
-        status, output = main_output("--workflow-dir", str(link), "--format", "json")
+        status, output = main_output(
+            str(self.root), "--workflow-dir", str(link), "--format", "json"
+        )
         self.assertEqual(status, 2)
         self.assertIn("outside the repository root", output)
         status, output = main_output(str(self.root), "--format", "json")
@@ -474,7 +508,7 @@ class AuditTests(unittest.TestCase):
         except (NotImplementedError, OSError) as exc:
             self.skipTest(f"file symlinks are unavailable: {exc}")
         status, output = main_output(
-            "--workflow-dir", str(directory), "--format", "json"
+            str(self.root), "--workflow-dir", str(directory), "--format", "json"
         )
         self.assertEqual(status, 2)
         self.assertIn("outside the repository root", output)
@@ -510,6 +544,28 @@ class AuditTests(unittest.TestCase):
             json.loads(ordinary_output)["findings"],
         )
 
+    def test_custom_workflow_file_uses_repository_root(self):
+        (self.root / ".git").mkdir()
+        directory = self.root / "ci"
+        directory.mkdir()
+        path = directory / "test.yml"
+        path.write_text(self.fixture("lockfile"))
+        status, output = main_output(str(path), "--format", "json")
+        report = json.loads(output)
+        self.assertEqual(status, 1)
+        self.assertEqual([f["rule_id"] for f in report["findings"]], ["GHA-CACHE-003"])
+
+    def test_workflow_directory_uses_explicit_root_without_git_metadata(self):
+        directory = self.root / "ci"
+        directory.mkdir()
+        (directory / "test.yml").write_text(self.fixture("lockfile"))
+        status, output = main_output(
+            str(self.root), "--workflow-dir", "ci", "--format", "json"
+        )
+        report = json.loads(output)
+        self.assertEqual(status, 1)
+        self.assertEqual([f["rule_id"] for f in report["findings"]], ["GHA-CACHE-003"])
+
     def test_explicit_workflow_directory_is_scanned(self):
         directory = self.root / "custom-workflows"
         directory.mkdir()
@@ -517,7 +573,7 @@ class AuditTests(unittest.TestCase):
         (directory / "README.md").write_text("Workflow fixtures\n")
         (directory / "safe.yml").write_text(self.fixture("safe"))
         status, output = main_output(
-            "--workflow-dir", str(directory), "--format", "json"
+            str(self.root), "--workflow-dir", str(directory), "--format", "json"
         )
         self.assertEqual(status, 0)
         self.assertEqual(len(json.loads(output)["caches"]), 1)
@@ -1238,6 +1294,7 @@ class ActionTests(unittest.TestCase):
             step["env"]["AUDITOR_WORKFLOW_DIR"], "${{ inputs.workflow-dir }}"
         )
         self.assertIn('--workflow-dir "$AUDITOR_WORKFLOW_DIR"', script)
+        self.assertIn('-- "$AUDITOR_TARGET"', script)
         for command in (
             "python -I -m venv",
             '"$audit_python" -I -m pip',

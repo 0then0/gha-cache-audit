@@ -1,6 +1,7 @@
 """Artifact dependencies compared with key inputs; no workflow execution."""
 
 import re
+import shlex
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 
@@ -223,18 +224,61 @@ def local_files(root: Path, parent: str, names):
 
 def requirement_file_is_installed(commands, filename):
     """Only treat requirements files named by an install command as inputs."""
-    escaped = re.escape(filename)
-    requirement = re.compile(
-        rf"^\s*(?:(?:uv\s+)?pip\s+|python(?:\d+(?:\.\d+)*)?\s+-m\s+pip\s+)"
-        rf"install\b[^\n]*(?:-r\s+|--requirement(?:=|\s+))"
-        rf"(?:\"{escaped}\"|'{escaped}'|{escaped})(?=\s|$|[;&|])",
-        re.IGNORECASE,
-    )
-    return any(
-        requirement.search(line)
-        for command in commands
-        for line in str(command.get("run", "")).splitlines()
-    )
+
+    def matches_argument(argument):
+        return argument.replace("\\", "/").removeprefix("./") == filename
+
+    for command in commands:
+        for line in str(command.get("run", "")).splitlines():
+            try:
+                lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|")
+                lexer.whitespace_split = True
+                lexer.commenters = "#"
+                tokens = list(lexer)
+            except ValueError:
+                continue
+            segments, current = [], []
+            for token in tokens:
+                if token and all(char in ";&|" for char in token):
+                    if current:
+                        segments.append(current)
+                        current = []
+                else:
+                    current.append(token)
+            if current:
+                segments.append(current)
+            for args in segments:
+                offset = 0
+                if len(args) >= 3 and args[0] == "uv" and args[1] == "pip":
+                    offset = 2
+                elif len(args) >= 2 and re.fullmatch(r"pip(?:\d+(?:\.\d+)*)?", args[0]):
+                    offset = 1
+                elif (
+                    len(args) >= 3
+                    and re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", args[0])
+                    and args[1:3] == ["-m", "pip"]
+                ):
+                    offset = 3
+                if len(args) <= offset or args[offset] != "install":
+                    continue
+                options = args[offset + 1 :]
+                for index, option in enumerate(options):
+                    if option in {"-r", "--requirement"}:
+                        if index + 1 < len(options) and matches_argument(
+                            options[index + 1]
+                        ):
+                            return True
+                    elif option.startswith("--requirement=") and matches_argument(
+                        option.partition("=")[2]
+                    ):
+                        return True
+                    elif (
+                        option.startswith("-r")
+                        and len(option) > 2
+                        and matches_argument(option[2:])
+                    ):
+                        return True
+    return False
 
 
 def npm_ignores_lock(commands, npmrc: Path) -> bool:

@@ -14,29 +14,25 @@ from .report import render
 from .workflow import parse
 
 
-def discover(target, workflow_directory=False):
+def discover(target, workflow_directory=None):
     input_path = target.absolute()
     target = Path(os.path.normpath(input_path))
-    if workflow_directory:
+    if workflow_directory is not None:
         if not input_path.is_dir():
-            raise ValueError(f"workflow directory does not exist: {target}")
-        checkout = next(
-            (
-                parent
-                for parent in (target, *target.parents)
-                if (parent / ".git").exists()
-            ),
-            None,
-        )
-        root = (
-            target.parent.parent
-            if target.name == "workflows" and target.parent.name == ".github"
-            else checkout or target
-        ).resolve()
-        directory = input_path.resolve()
+            raise ValueError(f"repository root does not exist: {target}")
+        workflow_input = (
+            workflow_directory
+            if workflow_directory.is_absolute()
+            else input_path / workflow_directory
+        ).absolute()
+        workflow_target = Path(os.path.normpath(workflow_input))
+        if not workflow_input.is_dir():
+            raise ValueError(f"workflow directory does not exist: {workflow_target}")
+        root = input_path.resolve()
+        directory = workflow_input.resolve()
         if not directory.is_relative_to(root):
             raise ValueError(
-                f"workflow directory resolves outside the repository root: {target}"
+                f"workflow directory resolves outside the repository root: {workflow_target}"
             )
         paths = sorted(
             p
@@ -50,14 +46,23 @@ def discover(target, workflow_directory=False):
                 )
         return root, paths
     if input_path.is_file():
-        root = (
-            target.parent.parent.parent
-            if target.parent.name == "workflows"
-            and target.parent.parent.name == ".github"
-            else target.parent
-        )
-        root = root.resolve()
         resolved_target = input_path.resolve()
+        checkout = next(
+            (
+                parent
+                for parent in (target.parent, *target.parent.parents)
+                if (parent / ".git").exists()
+            ),
+            None,
+        )
+        if target.parent.name == "workflows" and target.parent.parent.name == ".github":
+            root = target.parent.parent.parent.resolve()
+        elif checkout is not None:
+            root = checkout.resolve()
+        elif resolved_target.is_relative_to(Path.cwd().resolve()):
+            root = Path.cwd().resolve()
+        else:
+            root = target.parent.resolve()
         if not resolved_target.is_relative_to(root):
             raise ValueError(
                 f"workflow path resolves outside the repository root: {target}"
@@ -133,16 +138,13 @@ def main(argv=None):
     parser.add_argument(
         "--workflow-dir",
         type=Path,
-        help="analyze this directory as workflows instead of a repository root",
+        help="analyze this workflow directory inside the positional repository root",
     )
     args = parser.parse_args(argv)
     caches, findings, diagnostics = [], [], []
     source_cache = {}
     try:
-        root, paths = discover(
-            args.workflow_dir or Path(args.path),
-            workflow_directory=args.workflow_dir is not None,
-        )
+        root, paths = discover(Path(args.path), workflow_directory=args.workflow_dir)
         if args.config and not args.config.is_file():
             raise ValueError(f"configuration does not exist: {args.config}")
         config_path = args.config or root / ".gha-cache-audit.toml"

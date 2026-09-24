@@ -48,7 +48,7 @@ runs:
         echo "report=$report" >> "$GITHUB_OUTPUT"
         set +e
         if [ -n "$AUDITOR_WORKFLOW_DIR" ]; then
-          "$audit_python" -I -m gha_cache_audit --format "$AUDITOR_FORMAT" --min-confidence "$AUDITOR_CONFIDENCE" --workflow-dir "$AUDITOR_WORKFLOW_DIR" > "$report"
+          "$audit_python" -I -m gha_cache_audit --format "$AUDITOR_FORMAT" --min-confidence "$AUDITOR_CONFIDENCE" --workflow-dir "$AUDITOR_WORKFLOW_DIR" -- "$AUDITOR_TARGET" > "$report"
         else
           "$audit_python" -I -m gha_cache_audit --format "$AUDITOR_FORMAT" --min-confidence "$AUDITOR_CONFIDENCE" -- "$AUDITOR_TARGET" > "$report"
         fi

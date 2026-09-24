@@ -37,7 +37,8 @@ jobs:
       - id: audit
         uses: ./
         with:
-          path: tests/fixtures/safe.yml
+          path: .
+          workflow-dir: tests/fixtures/action-smoke
           format: sarif
       - name: Verify clean report
         shell: bash
