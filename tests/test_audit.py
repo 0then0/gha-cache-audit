@@ -179,6 +179,24 @@ class AuditTests(unittest.TestCase):
                 ).replace("pyproject.toml", "requirements.txt-dev")
             )
         )
+        self.assertEqual(
+            [
+                f.rule_id
+                for f in self.scan(
+                    workflow_text.replace(
+                        "pip install .", r"pip install -r .\requirements.txt"
+                    )
+                )
+            ],
+            ["GHA-CACHE-003"],
+        )
+        self.assertFalse(
+            self.scan(
+                workflow_text.replace(
+                    "pip install .", "pip install -r requirements.txt#dev"
+                )
+            )
+        )
         self.assertFalse(
             self.scan(
                 workflow_text.replace(
@@ -197,6 +215,11 @@ class AuditTests(unittest.TestCase):
             ],
             ["GHA-CACHE-003"],
         )
+        multiline = workflow_text.replace(
+            "      - run: pip install .",
+            "      - run: |\n          pip install \\\n            -r requirements.txt",
+        )
+        self.assertEqual([f.rule_id for f in self.scan(multiline)], ["GHA-CACHE-003"])
         for command in (
             "uv pip install -r requirements.txt",
             "python -m pip install --requirement=./requirements.txt",
@@ -221,6 +244,19 @@ class AuditTests(unittest.TestCase):
                 )
             ],
             ["GHA-CACHE-003"],
+        )
+        (self.root / "web").mkdir()
+        (self.root / "web/requirements.txt").write_text("web-only==1\n")
+        nested_cache = workflow_text.replace("path: .venv", "path: web/.venv").replace(
+            "pip install .", "pip install -r requirements.txt"
+        )
+        self.assertFalse(self.scan(nested_cache))
+        nested_install = nested_cache.replace(
+            "      - run: pip install -r requirements.txt",
+            "      - run: pip install -r requirements.txt\n        working-directory: web",
+        )
+        self.assertEqual(
+            [f.rule_id for f in self.scan(nested_install)], ["GHA-CACHE-003"]
         )
 
     def test_lockfile_ignored_by_npm(self):
@@ -551,6 +587,18 @@ class AuditTests(unittest.TestCase):
         path = directory / "test.yml"
         path.write_text(self.fixture("lockfile"))
         status, output = main_output(str(path), "--format", "json")
+        report = json.loads(output)
+        self.assertEqual(status, 1)
+        self.assertEqual([f["rule_id"] for f in report["findings"]], ["GHA-CACHE-003"])
+
+    def test_custom_workflow_file_accepts_explicit_root_without_git(self):
+        directory = self.root / "ci"
+        directory.mkdir()
+        path = directory / "test.yml"
+        path.write_text(self.fixture("lockfile"))
+        status, output = main_output(
+            str(path), "--root", str(self.root), "--format", "json"
+        )
         report = json.loads(output)
         self.assertEqual(status, 1)
         self.assertEqual([f["rule_id"] for f in report["findings"]], ["GHA-CACHE-003"])

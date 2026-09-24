@@ -39,11 +39,11 @@ jobs:
         with:
           path: .
           workflow-dir: tests/fixtures/action-smoke
-          format: sarif
+          format: json
       - name: Verify clean report
         shell: bash
         env:
           AUDIT_REPORT: ${{ steps.audit.outputs.report }}
         run: |
           test -s "$AUDIT_REPORT"
-          python -c 'import json,sys; run=json.load(open(sys.argv[1], encoding="utf-8"))["runs"][0]; assert not run["results"] and run["invocations"][0]["executionSuccessful"]' "$AUDIT_REPORT"
+          python -c 'import json,sys; report=json.load(open(sys.argv[1], encoding="utf-8")); assert [cache["file"] for cache in report["caches"]] == ["tests/fixtures/action-smoke/safe.yml"]; assert not report["findings"] and not report["diagnostics"]' "$AUDIT_REPORT"

@@ -56,6 +56,7 @@ uv tool install .
 gha-cache-audit .
 gha-cache-audit .github/workflows --format json
 gha-cache-audit . --workflow-dir ./ci --format json
+gha-cache-audit ./ci/test.yml --root . --format json
 gha-cache-audit . --format sarif > cache-audit.sarif
 gha-cache-audit . --min-confidence medium
 ```
@@ -70,6 +71,8 @@ root or the conventional `.github/workflows` directory. File paths in reports
 are relative to the inferred repository root. Dependency files are checked
 there, not relative to the workflow YAML. Monorepo installed directories are
 associated with dependency files in their own parent directory.
+For a standalone workflow file outside `.github/workflows`, use `--root` when
+the repository root cannot be inferred from a checkout or the current directory.
 
 Exit codes: **0** no findings at the selected confidence, **1** findings,
 **2** parse/configuration errors or explicitly unsupported workflow structures.

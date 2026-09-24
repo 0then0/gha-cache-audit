@@ -1,5 +1,6 @@
 """Artifact dependencies compared with key inputs; no workflow execution."""
 
+import posixpath
 import re
 import shlex
 from fnmatch import fnmatchcase
@@ -225,15 +226,67 @@ def local_files(root: Path, parent: str, names):
 def requirement_file_is_installed(commands, filename):
     """Only treat requirements files named by an install command as inputs."""
 
-    def matches_argument(argument):
-        return argument.replace("\\", "/").removeprefix("./") == filename
+    def strip_comment(line):
+        quote = None
+        escaped = False
+        for index, char in enumerate(line):
+            if escaped:
+                escaped = False
+            elif char == "\\" and quote != "'":
+                escaped = True
+            elif quote:
+                if char == quote:
+                    quote = None
+            elif char in "\"'":
+                quote = char
+            elif char == "#" and (
+                index == 0 or line[index - 1].isspace() or line[index - 1] in ";&|"
+            ):
+                return line[:index]
+        return line
+
+    def logical_lines(script):
+        pending = ""
+        for line in script.splitlines():
+            stripped = line.rstrip()
+            slash_count = len(stripped) - len(stripped.rstrip("\\"))
+            tick_count = len(stripped) - len(stripped.rstrip("`"))
+            if slash_count % 2:
+                pending += stripped[:-1] + " "
+            elif tick_count % 2:
+                pending += stripped[:-1] + " "
+            else:
+                yield pending + line
+                pending = ""
+        if pending:
+            yield pending
+
+    def resolves_to(argument, working_directory):
+        argument = argument.replace("\\", "/")
+        working_directory = working_directory.replace("\\", "/")
+        if (
+            not argument
+            or argument.startswith("/")
+            or re.match(r"^[A-Za-z]:", argument)
+            or "${{" in argument
+            or not working_directory
+            or working_directory.startswith("/")
+            or re.match(r"^[A-Za-z]:", working_directory)
+            or "${{" in working_directory
+        ):
+            return False
+        resolved = posixpath.normpath(posixpath.join(working_directory, argument))
+        return resolved == filename
 
     for command in commands:
-        for line in str(command.get("run", "")).splitlines():
+        working_directory = str(command.get("working-directory", "."))
+        for line in logical_lines(str(command.get("run", ""))):
+            line = strip_comment(line)
             try:
                 lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|")
                 lexer.whitespace_split = True
-                lexer.commenters = "#"
+                lexer.escape = ""
+                lexer.commenters = ""
                 tokens = list(lexer)
             except ValueError:
                 continue
@@ -264,18 +317,18 @@ def requirement_file_is_installed(commands, filename):
                 options = args[offset + 1 :]
                 for index, option in enumerate(options):
                     if option in {"-r", "--requirement"}:
-                        if index + 1 < len(options) and matches_argument(
-                            options[index + 1]
+                        if index + 1 < len(options) and resolves_to(
+                            options[index + 1], working_directory
                         ):
                             return True
-                    elif option.startswith("--requirement=") and matches_argument(
-                        option.partition("=")[2]
+                    elif option.startswith("--requirement=") and resolves_to(
+                        option.partition("=")[2], working_directory
                     ):
                         return True
                     elif (
                         option.startswith("-r")
                         and len(option) > 2
-                        and matches_argument(option[2:])
+                        and resolves_to(option[2:], working_directory)
                     ):
                         return True
     return False
@@ -441,7 +494,7 @@ def analyze(cache: Cache, root: Path, overrides=(), source_cache=None) -> list[F
                 f
                 for f in expected
                 if PurePosixPath(f).name != "requirements.txt"
-                or requirement_file_is_installed(cache.commands, "requirements.txt")
+                or requirement_file_is_installed(cache.commands, f)
             ]
         if (
             kind == "node"

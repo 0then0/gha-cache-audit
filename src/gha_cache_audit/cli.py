@@ -14,10 +14,13 @@ from .report import render
 from .workflow import parse
 
 
-def discover(target, workflow_directory=None):
+def discover(target, workflow_directory=None, repository_root=None):
     input_path = target.absolute()
     target = Path(os.path.normpath(input_path))
+    explicit_root = repository_root.resolve() if repository_root else None
     if workflow_directory is not None:
+        if explicit_root is not None:
+            raise ValueError("--root cannot be combined with --workflow-dir")
         if not input_path.is_dir():
             raise ValueError(f"repository root does not exist: {target}")
         workflow_input = (
@@ -47,6 +50,15 @@ def discover(target, workflow_directory=None):
         return root, paths
     if input_path.is_file():
         resolved_target = input_path.resolve()
+        if explicit_root is not None:
+            if not explicit_root.is_dir():
+                raise ValueError(f"repository root does not exist: {explicit_root}")
+            root = explicit_root
+            if not resolved_target.is_relative_to(root):
+                raise ValueError(
+                    f"workflow path resolves outside the repository root: {target}"
+                )
+            return root, [resolved_target]
         checkout = next(
             (
                 parent
@@ -70,6 +82,8 @@ def discover(target, workflow_directory=None):
         return root, [resolved_target]
     if not input_path.is_dir():
         raise ValueError(f"path does not exist: {target}")
+    if explicit_root is not None:
+        raise ValueError("--root can only be used with a single workflow file")
     resolved_target = input_path.resolve()
     if target.name == "workflows" and target.parent.name == ".github":
         root, directory = target.parent.parent.resolve(), resolved_target
@@ -136,6 +150,11 @@ def main(argv=None):
     parser.add_argument("--min-confidence", choices=("high", "medium"), default="high")
     parser.add_argument("--config", type=Path)
     parser.add_argument(
+        "--root",
+        type=Path,
+        help="explicit repository root when analyzing one workflow file",
+    )
+    parser.add_argument(
         "--workflow-dir",
         type=Path,
         help="analyze this workflow directory inside the positional repository root",
@@ -144,7 +163,11 @@ def main(argv=None):
     caches, findings, diagnostics = [], [], []
     source_cache = {}
     try:
-        root, paths = discover(Path(args.path), workflow_directory=args.workflow_dir)
+        root, paths = discover(
+            Path(args.path),
+            workflow_directory=args.workflow_dir,
+            repository_root=args.root,
+        )
         if args.config and not args.config.is_file():
             raise ValueError(f"configuration does not exist: {args.config}")
         config_path = args.config or root / ".gha-cache-audit.toml"
