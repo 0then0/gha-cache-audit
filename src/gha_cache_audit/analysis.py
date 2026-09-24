@@ -21,6 +21,8 @@ BUILD_CONFIGS = (
     "next.config.mjs",
     "next.config.ts",
 )
+MATRIX_EVIDENCE_MAX_VALUES = 10
+MATRIX_EVIDENCE_MAX_VALUE_LENGTH = 120
 
 
 def scalar(value):
@@ -30,6 +32,26 @@ def scalar(value):
     if isinstance(value, bool):
         return str(value).lower()
     return str(value)
+
+
+def summarize_matrix(rows, dimensions):
+    """Return bounded examples for matrix dimensions relevant to a finding."""
+    summary = {}
+    for dimension in sorted(dimensions):
+        values = sorted({scalar(row.get(dimension)) for row in rows})
+        examples = [
+            value
+            if len(value) <= MATRIX_EVIDENCE_MAX_VALUE_LENGTH
+            else value[: MATRIX_EVIDENCE_MAX_VALUE_LENGTH - 3] + "..."
+            for value in values[:MATRIX_EVIDENCE_MAX_VALUES]
+        ]
+        summary[dimension] = {
+            "distinct_values": len(values),
+            "examples": examples,
+            "truncated": len(values) > len(examples)
+            or any(len(value) > MATRIX_EVIDENCE_MAX_VALUE_LENGTH for value in values),
+        }
+    return summary
 
 
 def matches(path: str, pattern: str, ignore_case: bool = False) -> bool:
@@ -251,7 +273,9 @@ def analyze(cache: Cache, root: Path, overrides=(), source_cache=None) -> list[F
                 + ", ".join("${{ " + r + " }}" for r in runtime_missing)
                 + " in the cache key.",
                 {
-                    "matrix": cache.matrix,
+                    "matrix": summarize_matrix(
+                        cache.matrix, {ref[7:] for ref in runtime_missing}
+                    ),
                     "runtime_inputs": sorted(required),
                     "key_inputs": sorted(key.refs),
                 },

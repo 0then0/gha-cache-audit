@@ -838,6 +838,29 @@ class AuditTests(unittest.TestCase):
         )
         self.assertNotIn(script, output)
 
+    def test_json_matrix_evidence_is_bounded_for_yaml_aliases(self):
+        long_value = "x" * 10_000
+        matrix_values = ", ".join(
+            ["&large " + long_value] + ["*large"] * 254 + ["small"]
+        )
+        text = self.fixture("matrix").replace(
+            "node: [22, 24]", f"node: [{matrix_values}]"
+        )
+        self.write(text)
+
+        status, output = self.cli("--format", "json")
+
+        self.assertEqual(status, 1)
+        report = json.loads(output)
+        finding = next(f for f in report["findings"] if f["rule_id"] == "GHA-CACHE-001")
+        matrix = finding["evidence"]["matrix"]["node"]
+        self.assertEqual(matrix["distinct_values"], 2)
+        self.assertEqual(len(matrix["examples"]), 2)
+        self.assertTrue(matrix["truncated"])
+        self.assertLessEqual(max(map(len, matrix["examples"])), 120)
+        self.assertEqual(finding["evidence"]["runtime_inputs"], ["matrix.node"])
+        self.assertLess(len(output), 25_000)
+
     def test_cli_errors_are_structured(self):
         self.write("jobs: [")
         status, output = self.cli("--format", "json")
