@@ -1346,6 +1346,18 @@ class AuditTests(unittest.TestCase):
             {"GHA-CACHE-001", "GHA-CACHE-003"},
         )
 
+    def test_invalid_suppression_rule_types_are_structured_errors(self):
+        self.write(self.fixture("safe"))
+        config = self.root / ".gha-cache-audit.toml"
+        for rule in ("[]", "{}"):
+            with self.subTest(rule=rule):
+                config.write_text(
+                    f'[[suppressions]]\nrule = {rule}\nreason = "invalid rule type"\n'
+                )
+                status, output = self.cli("--format", "json")
+                self.assertEqual(status, 2)
+                self.assertTrue(json.loads(output)["diagnostics"])
+
 
 class ExpressionTests(unittest.TestCase):
     def test_literals_not_references(self):

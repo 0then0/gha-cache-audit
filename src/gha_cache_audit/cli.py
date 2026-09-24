@@ -124,7 +124,8 @@ def configuration(path):
     for item in data.get("suppressions", []):
         if (
             set(item) - {"rule", "file", "path", "reason"}
-            or item.get("rule") not in RULES
+            or not isinstance(item.get("rule"), str)
+            or item["rule"] not in RULES
             or not isinstance(item.get("reason"), str)
             or not item["reason"].strip()
         ):
