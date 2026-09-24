@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gha-cache-auditor"
-version = "0.1.1"
+version = "0.1.2"
 description = "Conservative static analysis of GitHub Actions cache invalidation"
 readme = "README.md"
 requires-python = ">=3.11"

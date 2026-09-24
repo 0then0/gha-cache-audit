@@ -4,19 +4,28 @@ import json
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import yaml
 
-from gha_cache_audit import workflow
+from gha_cache_audit import __version__, workflow
 from gha_cache_audit.analysis import analyze, matches
 from gha_cache_audit.cli import main
 from gha_cache_audit.expressions import dependencies
 from gha_cache_audit.workflow import matrix_rows, parse
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+class VersionTests(unittest.TestCase):
+    def test_package_and_project_versions_match(self):
+        project = tomllib.loads(
+            (Path(__file__).parents[1] / "pyproject.toml").read_text()
+        )
+        self.assertEqual(__version__, project["project"]["version"])
 
 
 def main_output(*args):
