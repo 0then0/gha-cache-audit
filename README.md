@@ -226,11 +226,12 @@ steps:
 For consumers, use the repository and a full release tag, for example
 `0then0/gha-cache-audit@vX.Y.Z`. Releases use `vMAJOR.MINOR.PATCH` tags and the
 tag must match `[project].version` in `pyproject.toml`. Pushing a matching tag
-runs the release job after the test and Action smoke jobs pass. It builds the
-wheel and source distribution, checks that the wheel can run the CLI, generates
-SHA-256 checksums, and attaches these files to a GitHub Release with generated
-release notes. The job needs the repository's default `GITHUB_TOKEN` with
-`contents: write`; it does not publish to PyPI.
+runs the release jobs after the test and Action smoke jobs pass. A read-only job
+builds and checks the wheel and source distribution, then creates SHA-256
+checksums. A separate publishing job attaches these files to a GitHub Release
+with generated release notes; only that job needs the repository's default
+`GITHUB_TOKEN` with `contents: write`. Failed draft uploads can be retried. The
+workflow does not publish to PyPI.
 
 To publish a release, update the project version and lockfile, commit the
 change, then push an annotated version tag that points to that commit:
