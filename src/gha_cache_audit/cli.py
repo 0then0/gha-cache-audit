@@ -1,6 +1,7 @@
 """Filesystem-only CLI. Exit codes: 0 clean, 1 findings, 2 incomplete analysis."""
 
 import argparse
+import os
 import sys
 import tomllib
 from fnmatch import fnmatchcase
@@ -13,9 +14,42 @@ from .report import render
 from .workflow import parse
 
 
-def discover(target):
-    target = target.absolute()
-    if target.is_file():
+def discover(target, workflow_directory=False):
+    input_path = target.absolute()
+    target = Path(os.path.normpath(input_path))
+    if workflow_directory:
+        if not input_path.is_dir():
+            raise ValueError(f"workflow directory does not exist: {target}")
+        checkout = next(
+            (
+                parent
+                for parent in (target, *target.parents)
+                if (parent / ".git").exists()
+            ),
+            None,
+        )
+        root = (
+            target.parent.parent
+            if target.name == "workflows" and target.parent.name == ".github"
+            else checkout or target
+        ).resolve()
+        directory = input_path.resolve()
+        if not directory.is_relative_to(root):
+            raise ValueError(
+                f"workflow directory resolves outside the repository root: {target}"
+            )
+        paths = sorted(
+            p
+            for p in directory.iterdir()
+            if p.is_file() and p.suffix.lower() in {".yml", ".yaml"}
+        )
+        for path in paths:
+            if not path.resolve().is_relative_to(root):
+                raise ValueError(
+                    f"workflow path resolves outside the repository root: {path}"
+                )
+        return root, paths
+    if input_path.is_file():
         root = (
             target.parent.parent.parent
             if target.parent.name == "workflows"
@@ -23,45 +57,25 @@ def discover(target):
             else target.parent
         )
         root = root.resolve()
-        resolved_target = target.resolve()
+        resolved_target = input_path.resolve()
         if not resolved_target.is_relative_to(root):
             raise ValueError(
                 f"workflow path resolves outside the repository root: {target}"
             )
         return root, [resolved_target]
-    if not target.is_dir():
+    if not input_path.is_dir():
         raise ValueError(f"path does not exist: {target}")
-    target = target.resolve()
+    resolved_target = input_path.resolve()
     if target.name == "workflows" and target.parent.name == ".github":
-        root, directory = target.parent.parent, target
+        root, directory = target.parent.parent.resolve(), resolved_target
     else:
-        root, directory = target, target / ".github/workflows"
-        # A repository root means its conventional workflow directory. Do not
-        # interpret unrelated YAML (for example compose.yml) as a workflow.
+        root, directory = resolved_target, resolved_target / ".github/workflows"
         if not directory.is_dir():
-            repository_markers = (
-                ".git",
-                ".github",
-                "pyproject.toml",
-                "package.json",
-                "package-lock.json",
-                "requirements.txt",
-                "Cargo.toml",
-                "go.mod",
-            )
-            yaml_files = [
-                p
-                for p in target.iterdir()
-                if p.is_file() and p.suffix.lower() in {".yml", ".yaml"}
-            ]
-            if yaml_files and (
-                "workflow" in target.name.lower()
-                or not any((target / marker).exists() for marker in repository_markers)
-            ):
-                directory = target
-            else:
-                return root, []
-    root = root.resolve()
+            return root, []
+    if not directory.resolve().is_relative_to(root):
+        raise ValueError(
+            f"workflow directory resolves outside the repository root: {directory}"
+        )
     paths = sorted(
         p
         for p in directory.iterdir()
@@ -116,11 +130,19 @@ def main(argv=None):
     parser.add_argument("--format", choices=("text", "json", "sarif"), default="text")
     parser.add_argument("--min-confidence", choices=("high", "medium"), default="high")
     parser.add_argument("--config", type=Path)
+    parser.add_argument(
+        "--workflow-dir",
+        type=Path,
+        help="analyze this directory as workflows instead of a repository root",
+    )
     args = parser.parse_args(argv)
     caches, findings, diagnostics = [], [], []
     source_cache = {}
     try:
-        root, paths = discover(Path(args.path))
+        root, paths = discover(
+            args.workflow_dir or Path(args.path),
+            workflow_directory=args.workflow_dir is not None,
+        )
         if args.config and not args.config.is_file():
             raise ValueError(f"configuration does not exist: {args.config}")
         config_path = args.config or root / ".gha-cache-audit.toml"

@@ -55,6 +55,7 @@ release. Install from a local checkout:
 uv tool install .
 gha-cache-audit .
 gha-cache-audit .github/workflows --format json
+gha-cache-audit --workflow-dir ./ci --format json
 gha-cache-audit . --format sarif > cache-audit.sarif
 gha-cache-audit . --min-confidence medium
 ```
@@ -62,9 +63,11 @@ gha-cache-audit . --min-confidence medium
 `pip install .` also installs the CLI. No token, GitHub App, workflow execution,
 or network access is needed during analysis. The auditor never modifies workflows.
 It scans immediate `.yml`/`.yaml` children of `.github/workflows`, a supplied
-workflow directory, or one supplied workflow file. File paths in reports are
-relative to the inferred repository root. Dependency files are checked there,
-not relative to the workflow YAML. Monorepo installed directories are associated
+workflow file, or an explicitly supplied workflow directory using
+`--workflow-dir`. A positional directory is treated as a repository root or the
+conventional `.github/workflows` directory. File paths in reports are relative
+to the inferred repository root. Dependency files are checked there, not
+relative to the workflow YAML. Monorepo installed directories are associated
 with dependency files in their own parent directory.
 
 Exit codes: **0** no findings at the selected confidence, **1** findings,
@@ -201,6 +204,8 @@ steps:
   - uses: ./ # auditor repository checkout; for consumers use OWNER/REPO@REF
     with:
       path: .
+      # Optional: set this when workflows live outside .github/workflows.
+      # workflow-dir: ./ci
       format: text
       min-confidence: high
 ```

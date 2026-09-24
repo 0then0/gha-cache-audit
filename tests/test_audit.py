@@ -172,6 +172,13 @@ class AuditTests(unittest.TestCase):
                 )
             )
         )
+        self.assertFalse(
+            self.scan(
+                workflow_text.replace(
+                    "pip install .", "pip install -r requirements.txt-dev"
+                ).replace("pyproject.toml", "requirements.txt-dev")
+            )
+        )
         self.assertEqual(
             [
                 f.rule_id
@@ -435,12 +442,83 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(status, 2)
         self.assertIn("outside the repository root", output)
 
+    def test_workflow_directory_symlink_cannot_escape_repository(self):
+        outside = self.root.parent / f"outside-workflows-{self.root.name}"
+        outside.mkdir()
+        self.addCleanup(outside.rmdir)
+        external = outside / "test.yml"
+        external.write_text(self.fixture("matrix"))
+        self.addCleanup(external.unlink, missing_ok=True)
+        # The conventional path is accepted by both discovery modes.
+        link = self.root / ".github/workflows"
+        link.rmdir()
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except (NotImplementedError, OSError) as exc:
+            self.skipTest(f"directory symlinks are unavailable: {exc}")
+        status, output = main_output("--workflow-dir", str(link), "--format", "json")
+        self.assertEqual(status, 2)
+        self.assertIn("outside the repository root", output)
+        status, output = main_output(str(self.root), "--format", "json")
+        self.assertEqual(status, 2)
+        self.assertIn("outside the repository root", output)
+
+    def test_explicit_workflow_directory_rejects_external_workflow_symlink(self):
+        outside = self.root.parent / f"outside-child-{self.root.name}.yml"
+        outside.write_text(self.fixture("matrix"))
+        self.addCleanup(outside.unlink, missing_ok=True)
+        directory = self.root / "custom-workflows"
+        directory.mkdir()
+        try:
+            (directory / "external.yml").symlink_to(outside)
+        except (NotImplementedError, OSError) as exc:
+            self.skipTest(f"file symlinks are unavailable: {exc}")
+        status, output = main_output(
+            "--workflow-dir", str(directory), "--format", "json"
+        )
+        self.assertEqual(status, 2)
+        self.assertIn("outside the repository root", output)
+
+    def test_parent_symlink_and_dotdot_cannot_escape_repository(self):
+        outside = self.root.parent / f"outside-parent-{self.root.name}"
+        (outside / "nested").mkdir(parents=True)
+        self.addCleanup(outside.rmdir)
+        self.addCleanup((outside / "nested").rmdir)
+        external = outside / "secret.yml"
+        external.write_text(self.fixture("matrix"))
+        self.addCleanup(external.unlink, missing_ok=True)
+        link = self.workflows / "linkdir"
+        try:
+            link.symlink_to(outside / "nested", target_is_directory=True)
+        except (NotImplementedError, OSError) as exc:
+            self.skipTest(f"directory symlinks are unavailable: {exc}")
+        status, output = main_output(
+            str(self.workflows / "linkdir/../secret.yml"), "--format", "json"
+        )
+        self.assertEqual(status, 2)
+        self.assertIn("outside the repository root", output)
+
+    def test_equivalent_workflow_file_paths_have_same_findings(self):
+        path = self.write(self.fixture("lockfile"))
+        ordinary_status, ordinary_output = main_output(str(path), "--format", "json")
+        dotted_status, dotted_output = main_output(
+            str(self.workflows / "../workflows/test.yml"), "--format", "json"
+        )
+        self.assertEqual(dotted_status, ordinary_status)
+        self.assertEqual(
+            json.loads(dotted_output)["findings"],
+            json.loads(ordinary_output)["findings"],
+        )
+
     def test_explicit_workflow_directory_is_scanned(self):
         directory = self.root / "custom-workflows"
         directory.mkdir()
+        (directory / "package.json").write_text("{}\n")
         (directory / "README.md").write_text("Workflow fixtures\n")
         (directory / "safe.yml").write_text(self.fixture("safe"))
-        status, output = main_output(str(directory), "--format", "json")
+        status, output = main_output(
+            "--workflow-dir", str(directory), "--format", "json"
+        )
         self.assertEqual(status, 0)
         self.assertEqual(len(json.loads(output)["caches"]), 1)
 
@@ -1153,7 +1231,13 @@ class ExpressionTests(unittest.TestCase):
 class ActionTests(unittest.TestCase):
     def test_python_module_invocations_ignore_checkout(self):
         action = yaml.safe_load((FIXTURES.parent.parent / "action.yml").read_text())
-        script = action["runs"]["steps"][0]["run"]
+        step = action["runs"]["steps"][0]
+        script = step["run"]
+        self.assertIn("workflow-dir", action["inputs"])
+        self.assertEqual(
+            step["env"]["AUDITOR_WORKFLOW_DIR"], "${{ inputs.workflow-dir }}"
+        )
+        self.assertIn('--workflow-dir "$AUDITOR_WORKFLOW_DIR"', script)
         for command in (
             "python -I -m venv",
             '"$audit_python" -I -m pip',

@@ -2,8 +2,11 @@ name: GHA Cache Auditor
 description: Detect potentially incomplete cache keys in repository workflows
 inputs:
   path:
-    description: Repository or workflow directory to analyze
+    description: Repository root or one workflow file to analyze
     default: .
+  workflow-dir:
+    description: Explicit directory of workflow YAML files to analyze
+    default: ''
   format:
     description: Report format (text, json, sarif)
     default: text
@@ -22,6 +25,7 @@ runs:
       env:
         AUDITOR_SOURCE: ${{ github.action_path }}
         AUDITOR_TARGET: ${{ inputs.path }}
+        AUDITOR_WORKFLOW_DIR: ${{ inputs.workflow-dir }}
         AUDITOR_FORMAT: ${{ inputs.format }}
         AUDITOR_CONFIDENCE: ${{ inputs.min-confidence }}
       run: |
@@ -43,7 +47,11 @@ runs:
         if [ "$AUDITOR_FORMAT" = text ]; then report="$audit_tmp/report.txt"; fi
         echo "report=$report" >> "$GITHUB_OUTPUT"
         set +e
-        "$audit_python" -I -m gha_cache_audit --format "$AUDITOR_FORMAT" --min-confidence "$AUDITOR_CONFIDENCE" -- "$AUDITOR_TARGET" > "$report"
+        if [ -n "$AUDITOR_WORKFLOW_DIR" ]; then
+          "$audit_python" -I -m gha_cache_audit --format "$AUDITOR_FORMAT" --min-confidence "$AUDITOR_CONFIDENCE" --workflow-dir "$AUDITOR_WORKFLOW_DIR" > "$report"
+        else
+          "$audit_python" -I -m gha_cache_audit --format "$AUDITOR_FORMAT" --min-confidence "$AUDITOR_CONFIDENCE" -- "$AUDITOR_TARGET" > "$report"
+        fi
         audit_status=$?
         set -e
         command_token="$("$audit_python" -I -c 'import secrets; print(secrets.token_hex(32))')"
