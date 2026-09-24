@@ -47,3 +47,50 @@ jobs:
         run: |
           test -s "$AUDIT_REPORT"
           python -c 'import json,sys; report=json.load(open(sys.argv[1], encoding="utf-8")); assert [cache["file"] for cache in report["caches"]] == ["tests/fixtures/action-smoke/safe.yml"]; assert not report["findings"] and not report["diagnostics"]' "$AUDIT_REPORT"
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, action-smoke]
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          version: '0.12.18'
+      - name: Validate release tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import tomllib
+
+          with open("pyproject.toml", "rb") as project_file:
+              version = tomllib.load(project_file)["project"]["version"]
+          tag = os.environ["RELEASE_TAG"]
+          if not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", tag):
+              raise SystemExit(f"Release tag must use vMAJOR.MINOR.PATCH: {tag}")
+          if tag != f"v{version}":
+              raise SystemExit(f"Release tag {tag} does not match project version {version}")
+          PY
+      - name: Build distributions
+        run: uv build --no-sources --out-dir dist
+      - name: Verify distribution installation
+        shell: bash
+        run: |
+          set -euo pipefail
+          for distribution in dist/*.whl dist/*.tar.gz; do
+            uv run --no-project --with "$distribution" gha-cache-audit --help > /dev/null
+          done
+      - name: Create checksums
+        run: sha256sum dist/* > dist/SHA256SUMS
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes

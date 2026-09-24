@@ -48,8 +48,17 @@ An appropriate key for this example is
 
 ## Install and run
 
-Python 3.11+ is required. This repository is an initial MVP, not a published PyPI
-release. Install from a local checkout:
+Python 3.11+ is required. Install a released CLI with `uv` using the wheel attached
+to its GitHub Release:
+
+```sh
+# Replace X.Y.Z with a published release version.
+VERSION=X.Y.Z
+uv tool install "https://github.com/0then0/gha-cache-audit/releases/download/v${VERSION}/gha_cache_auditor-${VERSION}-py3-none-any.whl"
+gha-cache-audit .
+```
+
+Each release also includes a source distribution. To install from a checkout:
 
 ```sh
 uv tool install .
@@ -214,8 +223,23 @@ steps:
       min-confidence: high
 ```
 
-For consumers, replace `./` with the published repository and a reviewed commit
-or release tag. No official `v1` release has been published by this scaffold.
+For consumers, use the repository and a full release tag, for example
+`0then0/gha-cache-audit@vX.Y.Z`. Releases use `vMAJOR.MINOR.PATCH` tags and the
+tag must match `[project].version` in `pyproject.toml`. Pushing a matching tag
+runs the release job after the test and Action smoke jobs pass. It builds the
+wheel and source distribution, checks that the wheel can run the CLI, generates
+SHA-256 checksums, and attaches these files to a GitHub Release with generated
+release notes. The job needs the repository's default `GITHUB_TOKEN` with
+`contents: write`; it does not publish to PyPI.
+
+To publish a release, update the project version and lockfile, commit the
+change, then push an annotated version tag that points to that commit:
+
+```sh
+git tag -a vX.Y.Z -m "Release vX.Y.Z"
+git push origin vX.Y.Z
+```
+
 The Action returns the CLI's nonzero exit status so findings fail the job.
 With `format: sarif`, its `report` output is a file in the runner's temporary
 directory. Upload it in a following `if: always()` step using
