@@ -905,6 +905,7 @@ class AuditTests(unittest.TestCase):
         report = json.loads(output)
         self.assertEqual(status, 1)
         self.assertEqual(report["version"], "2.1.0")
+        self.assertEqual(report["runs"][0]["results"][0]["ruleId"], "GHA-CACHE-001")
         self.assertEqual(
             report["runs"][0]["results"][0]["locations"][0]["physicalLocation"][
                 "region"
