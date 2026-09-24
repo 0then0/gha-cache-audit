@@ -83,8 +83,11 @@ Default confidence is `high`; `medium` includes both levels.
   A single fixed OS without `runner.os` is medium because a later workflow
   revision can move the job to another OS while preserving its key.
 - **GHA-CACHE-003**: an installed dependency directory has one identifiable local
-  lockfile/requirements file and the key does not hash it. High. Competing
-  lockfiles are ambiguous and skipped. A package manifest is not a lockfile.
+  lockfile/requirements file and the key does not hash it. High when the
+  platform is known; medium when unknown runner OS makes case-only hash matching
+  ambiguous. Competing lockfiles are ambiguous and skipped. A package manifest
+  is not a lockfile. `requirements.txt` is considered only when an install
+  command explicitly names it.
   An explicit npm install without package-lock use is not charged with a
   `package-lock.json` dependency.
 - **GHA-CACHE-004**: `dist`/`build`, a build command in the same directory and

@@ -14,7 +14,7 @@ from .workflow import parse
 
 
 def discover(target):
-    target = target.resolve()
+    target = target.absolute()
     if target.is_file():
         root = (
             target.parent.parent.parent
@@ -22,9 +22,16 @@ def discover(target):
             and target.parent.parent.name == ".github"
             else target.parent
         )
-        return root, [target]
+        root = root.resolve()
+        resolved_target = target.resolve()
+        if not resolved_target.is_relative_to(root):
+            raise ValueError(
+                f"workflow path resolves outside the repository root: {target}"
+            )
+        return root, [resolved_target]
     if not target.is_dir():
         raise ValueError(f"path does not exist: {target}")
+    target = target.resolve()
     if target.name == "workflows" and target.parent.name == ".github":
         root, directory = target.parent.parent, target
     else:
@@ -32,7 +39,28 @@ def discover(target):
         # A repository root means its conventional workflow directory. Do not
         # interpret unrelated YAML (for example compose.yml) as a workflow.
         if not directory.is_dir():
-            return root, []
+            repository_markers = (
+                ".git",
+                ".github",
+                "pyproject.toml",
+                "package.json",
+                "package-lock.json",
+                "requirements.txt",
+                "Cargo.toml",
+                "go.mod",
+            )
+            yaml_files = [
+                p
+                for p in target.iterdir()
+                if p.is_file() and p.suffix.lower() in {".yml", ".yaml"}
+            ]
+            if yaml_files and (
+                "workflow" in target.name.lower()
+                or not any((target / marker).exists() for marker in repository_markers)
+            ):
+                directory = target
+            else:
+                return root, []
     root = root.resolve()
     paths = sorted(
         p

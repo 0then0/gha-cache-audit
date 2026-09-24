@@ -19,6 +19,13 @@ from gha_cache_audit.workflow import matrix_rows, parse
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+def main_output(*args):
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        status = main(list(args))
+    return status, output.getvalue()
+
+
 class AuditTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -151,6 +158,20 @@ class AuditTests(unittest.TestCase):
             "      - run: pip install .\n"
         )
         self.assertFalse(self.scan(workflow_text))
+        self.assertFalse(
+            self.scan(
+                workflow_text.replace(
+                    "pip install .", "echo pip install -r requirements.txt"
+                )
+            )
+        )
+        self.assertFalse(
+            self.scan(
+                workflow_text.replace(
+                    "pip install .", "# pip install -r requirements.txt"
+                )
+            )
+        )
         self.assertEqual(
             [
                 f.rule_id
@@ -410,6 +431,18 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(status, 2)
         self.assertIn("outside the repository root", output)
         self.assertNotIn("GHA-CACHE-001", output)
+        status, output = main_output(str(link), "--format", "json")
+        self.assertEqual(status, 2)
+        self.assertIn("outside the repository root", output)
+
+    def test_explicit_workflow_directory_is_scanned(self):
+        directory = self.root / "custom-workflows"
+        directory.mkdir()
+        (directory / "README.md").write_text("Workflow fixtures\n")
+        (directory / "safe.yml").write_text(self.fixture("safe"))
+        status, output = main_output(str(directory), "--format", "json")
+        self.assertEqual(status, 0)
+        self.assertEqual(len(json.loads(output)["caches"]), 1)
 
     def test_default_config_symlink_cannot_escape_repository(self):
         outside = self.root.parent / f"outside-config-{self.root.name}.toml"

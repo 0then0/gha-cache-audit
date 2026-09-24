@@ -225,7 +225,7 @@ def requirement_file_is_installed(commands, filename):
     """Only treat requirements files named by an install command as inputs."""
     escaped = re.escape(filename)
     requirement = re.compile(
-        rf"(?:^|\s)(?:(?:uv\s+)?pip\s+|python(?:\d+(?:\.\d+)*)?\s+-m\s+pip\s+)"
+        rf"^\s*(?:(?:uv\s+)?pip\s+|python(?:\d+(?:\.\d+)*)?\s+-m\s+pip\s+)"
         rf"install\b[^\n]*(?:-r\s+|--requirement(?:=|\s+))['\"]?{escaped}(?:['\"]|\b)",
         re.IGNORECASE,
     )
