@@ -29,13 +29,22 @@ def discover(target):
         root, directory = target.parent.parent, target
     else:
         root, directory = target, target / ".github/workflows"
+        # A repository root means its conventional workflow directory. Do not
+        # interpret unrelated YAML (for example compose.yml) as a workflow.
         if not directory.is_dir():
-            directory = target
-    return root, sorted(
+            return root, []
+    root = root.resolve()
+    paths = sorted(
         p
         for p in directory.iterdir()
         if p.is_file() and p.suffix.lower() in {".yml", ".yaml"}
     )
+    for path in paths:
+        if not path.resolve().is_relative_to(root):
+            raise ValueError(
+                f"workflow path resolves outside the repository root: {path}"
+            )
+    return root, paths
 
 
 def configuration(path):
@@ -86,7 +95,12 @@ def main(argv=None):
         root, paths = discover(Path(args.path))
         if args.config and not args.config.is_file():
             raise ValueError(f"configuration does not exist: {args.config}")
-        config = configuration(args.config or root / ".gha-cache-audit.toml")
+        config_path = args.config or root / ".gha-cache-audit.toml"
+        if not args.config and not config_path.resolve().is_relative_to(root):
+            raise ValueError(
+                "default configuration resolves outside the repository root"
+            )
+        config = configuration(config_path)
         if not paths:
             diagnostics.append(
                 Diagnostic(str(args.path), 1, "no workflow YAML files found")

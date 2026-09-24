@@ -95,16 +95,31 @@ def hashed(path: str, pattern_groups: list[tuple[str, ...]], ignore_case=False) 
     return False
 
 
+def hash_coverage(path, pattern_groups, rows, runner, aliases):
+    """Return True, False, or None when runner OS makes matching uncertain."""
+    uncertain = False
+    for row in rows or [{}]:
+        os_name = platform(row, runner, aliases)
+        case_sensitive_match = hashed(path, pattern_groups)
+        if os_name == "windows":
+            matched = case_sensitive_match or hashed(path, pattern_groups, True)
+        elif os_name is None:
+            # A self-hosted runner without an OS label may be Windows, where
+            # hashFiles matching is case-insensitive.
+            case_insensitive_match = hashed(path, pattern_groups, True)
+            if not case_sensitive_match and case_insensitive_match:
+                uncertain = True
+            matched = case_sensitive_match or case_insensitive_match
+        else:
+            matched = case_sensitive_match
+        if not matched:
+            return False
+    return None if uncertain else True
+
+
 def hashed_for_job(path, pattern_groups, rows, runner, aliases):
     """A file must match hashFiles on every known matrix configuration."""
-    return all(
-        hashed(
-            path,
-            pattern_groups,
-            ignore_case=platform(row, runner, aliases) == "windows",
-        )
-        for row in (rows or [{}])
-    )
+    return hash_coverage(path, pattern_groups, rows, runner, aliases) is True
 
 
 def classify(path: str):
@@ -197,9 +212,28 @@ def platform_pairs(rows, covered, runner, aliases):
 
 
 def local_files(root: Path, parent: str, names):
+    root = root.resolve()
     return [
-        str(PurePosixPath(parent) / n) for n in names if (root / parent / n).is_file()
+        str(PurePosixPath(parent) / n)
+        for n in names
+        if (root / parent / n).resolve().is_relative_to(root)
+        and (root / parent / n).is_file()
     ]
+
+
+def requirement_file_is_installed(commands, filename):
+    """Only treat requirements files named by an install command as inputs."""
+    escaped = re.escape(filename)
+    requirement = re.compile(
+        rf"(?:^|\s)(?:(?:uv\s+)?pip\s+|python(?:\d+(?:\.\d+)*)?\s+-m\s+pip\s+)"
+        rf"install\b[^\n]*(?:-r\s+|--requirement(?:=|\s+))['\"]?{escaped}(?:['\"]|\b)",
+        re.IGNORECASE,
+    )
+    return any(
+        requirement.search(line)
+        for command in commands
+        for line in str(command.get("run", "")).splitlines()
+    )
 
 
 def npm_ignores_lock(commands, npmrc: Path) -> bool:
@@ -357,9 +391,17 @@ def analyze(cache: Cache, root: Path, overrides=(), source_cache=None) -> list[F
                     "Include ${{ runner.os }} in the cache key.",
                 )
         expected = local_files(root, parent, LOCKS.get(kind, ()))
+        if kind == "python":
+            expected = [
+                f
+                for f in expected
+                if PurePosixPath(f).name != "requirements.txt"
+                or requirement_file_is_installed(cache.commands, "requirements.txt")
+            ]
         if (
             kind == "node"
             and any(PurePosixPath(f).name == "package-lock.json" for f in expected)
+            and (root / parent / ".npmrc").resolve().is_relative_to(root.resolve())
             and npm_ignores_lock(cache.commands, root / parent / ".npmrc")
         ):
             expected = [
@@ -372,21 +414,18 @@ def analyze(cache: Cache, root: Path, overrides=(), source_cache=None) -> list[F
                 if not d.startswith(("matrix.", "runner.", "env."))
             ]
         # Multiple competing managers in one directory are ambiguous.
-        missing_files = (
-            [
-                f
-                for f in expected
-                if not hashed_for_job(
-                    f,
-                    key.files,
-                    cache.matrix,
-                    cache.runner,
-                    cache.aliases,
+        coverage = (
+            {
+                f: hash_coverage(
+                    f, key.files, cache.matrix, cache.runner, cache.aliases
                 )
-            ]
+                for f in expected
+            }
             if custom or len(expected) == 1
-            else []
+            else {}
         )
+        missing_files = [f for f, status in coverage.items() if status is False]
+        uncertain_files = [f for f, status in coverage.items() if status is None]
         if missing_files and not revision_key:
             add(
                 "GHA-CACHE-003",
@@ -396,6 +435,16 @@ def analyze(cache: Cache, root: Path, overrides=(), source_cache=None) -> list[F
                 "Changing that dependency file can leave the same cache key.",
                 "Include ${{ hashFiles("
                 + ", ".join("'" + f.replace("'", "''") + "'" for f in missing_files)
+                + ") }} in the cache key.",
+            )
+        elif uncertain_files and not revision_key:
+            add(
+                "GHA-CACHE-003",
+                "medium",
+                uncertain_files,
+                f"{original_path} may depend on files not hashed by its key on an unclassified runner platform: {', '.join(uncertain_files)}.",
+                "Include ${{ hashFiles("
+                + ", ".join("'" + f.replace("'", "''") + "'" for f in uncertain_files)
                 + ") }} in the cache key.",
             )
         if custom:
@@ -430,13 +479,18 @@ def analyze(cache: Cache, root: Path, overrides=(), source_cache=None) -> list[F
                 sources = None if source_cache is None else source_cache.get(project)
                 if sources is None:
                     source_root = root / project / "src"
+                    safe_source_root = source_root.resolve().is_relative_to(
+                        root.resolve()
+                    )
                     sources = (
                         [
                             f.relative_to(root).as_posix()
                             for f in source_root.rglob("*")
                             if f.is_file()
+                            and not f.is_symlink()
+                            and f.resolve().is_relative_to(root.resolve())
                         ]
-                        if source_root.is_dir()
+                        if safe_source_root and source_root.is_dir()
                         else []
                     )
                     if source_cache is not None:

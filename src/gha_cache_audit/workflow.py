@@ -159,7 +159,13 @@ def matrix_rows(value):
     for values in dimensions.values():
         count *= len(values)
     include, exclude = value.get("include", []), value.get("exclude", [])
-    if count > 256 or not isinstance(include, list) or not isinstance(exclude, list):
+    if (
+        count > 256
+        or not isinstance(include, list)
+        or not isinstance(exclude, list)
+        or len(include) > 256
+        or len(exclude) > 256
+    ):
         return [], True
     if any(
         not isinstance(row, dict)

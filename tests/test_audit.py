@@ -141,6 +141,28 @@ class AuditTests(unittest.TestCase):
             )
         )
 
+    def test_python_requirements_only_invalidates_cache_when_installed(self):
+        (self.root / "pyproject.toml").write_text("[project]\nname='example'\n")
+        (self.root / "requirements.txt").write_text("example==1.0\n")
+        workflow_text = (
+            "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n"
+            "      - uses: actions/cache@v4\n        with:\n"
+            "          path: .venv\n          key: deps-${{ hashFiles('pyproject.toml') }}\n"
+            "      - run: pip install .\n"
+        )
+        self.assertFalse(self.scan(workflow_text))
+        self.assertEqual(
+            [
+                f.rule_id
+                for f in self.scan(
+                    workflow_text.replace(
+                        "pip install .", "pip install -r requirements.txt"
+                    )
+                )
+            ],
+            ["GHA-CACHE-003"],
+        )
+
     def test_lockfile_ignored_by_npm(self):
         text = self.fixture("lockfile").replace(
             "    steps:", "    steps:\n      - run: npm install --package-lock=false"
@@ -197,6 +219,19 @@ class AuditTests(unittest.TestCase):
             ],
             ["GHA-CACHE-003"],
         )
+
+    def test_npmrc_symlink_cannot_read_outside_repository(self):
+        outside = self.root.parent / f"outside-npmrc-{self.root.name}"
+        outside.write_text("package-lock=false\n")
+        self.addCleanup(outside.unlink, missing_ok=True)
+        try:
+            (self.root / ".npmrc").symlink_to(outside)
+        except (NotImplementedError, OSError) as exc:
+            self.skipTest(f"file symlinks are unavailable: {exc}")
+        text = self.fixture("lockfile").replace(
+            "    steps:", "    steps:\n      - run: npm install"
+        )
+        self.assertEqual([f.rule_id for f in self.scan(text)], ["GHA-CACHE-003"])
 
     def test_build_positive_and_negative(self):
         (self.root / "src").mkdir()
@@ -361,6 +396,70 @@ class AuditTests(unittest.TestCase):
         self.assertTrue(
             any("outside the repository root" in d.message for d in diagnostics)
         )
+
+    def test_workflow_symlink_cannot_escape_repository(self):
+        outside = self.root.parent / f"outside-workflow-{self.root.name}.yml"
+        outside.write_text(self.fixture("matrix"))
+        self.addCleanup(outside.unlink, missing_ok=True)
+        link = self.workflows / "external.yml"
+        try:
+            link.symlink_to(outside)
+        except (NotImplementedError, OSError) as exc:
+            self.skipTest(f"file symlinks are unavailable: {exc}")
+        status, output = self.cli("--format", "json")
+        self.assertEqual(status, 2)
+        self.assertIn("outside the repository root", output)
+        self.assertNotIn("GHA-CACHE-001", output)
+
+    def test_default_config_symlink_cannot_escape_repository(self):
+        outside = self.root.parent / f"outside-config-{self.root.name}.toml"
+        outside.write_text(
+            '[[suppressions]]\nrule="GHA-CACHE-001"\nreason="external"\n'
+        )
+        self.addCleanup(outside.unlink, missing_ok=True)
+        try:
+            (self.root / ".gha-cache-audit.toml").symlink_to(outside)
+        except (NotImplementedError, OSError) as exc:
+            self.skipTest(f"file symlinks are unavailable: {exc}")
+        status, output = self.cli("--format", "json")
+        self.assertEqual(status, 2)
+        self.assertIn("default configuration resolves outside", output)
+
+    def test_root_without_workflows_does_not_parse_unrelated_yaml(self):
+        self.workflows.rmdir()
+        self.workflows.parent.rmdir()
+        (self.root / "compose.yml").write_text("services: {}\n")
+        status, output = self.cli("--format", "json")
+        self.assertEqual(status, 2)
+        self.assertIn("no workflow YAML files found", output)
+        self.assertNotIn("expected a workflow mapping", output)
+
+    def test_source_symlink_cannot_escape_repository(self):
+        outside = self.root.parent / f"outside-source-{self.root.name}"
+        outside.mkdir()
+        self.addCleanup(outside.rmdir)
+        external_source = outside / "private.ts"
+        external_source.write_text("export const secret = 1")
+        self.addCleanup(external_source.unlink, missing_ok=True)
+        source = self.root / "src"
+        try:
+            source.symlink_to(outside, target_is_directory=True)
+        except (NotImplementedError, OSError) as exc:
+            self.skipTest(f"directory symlinks are unavailable: {exc}")
+        findings = self.scan(self.fixture("build"), "medium")
+        self.assertFalse(any(f.rule_id == "GHA-CACHE-004" for f in findings))
+        self.assertFalse(any("private.ts" in f.missing for f in findings))
+
+    def test_unknown_self_hosted_os_allows_case_insensitive_hashfiles_match(self):
+        text = (
+            self.fixture("lockfile")
+            .replace("ubuntu-latest", "self-hosted")
+            .replace("yarn.lock", "PACKAGE-LOCK.JSON")
+        )
+        self.assertFalse(self.scan(text))
+        findings = self.scan(text, "medium")
+        self.assertEqual([finding.rule_id for finding in findings], ["GHA-CACHE-003"])
+        self.assertEqual(findings[0].confidence, "medium")
 
     def test_windows_hashfiles_matching_ignores_case(self):
         (self.root / "src").mkdir()
@@ -1008,6 +1107,10 @@ class ExpressionTests(unittest.TestCase):
 
     def test_matrix_limit(self):
         self.assertTrue(matrix_rows({"n": list(range(257))})[1])
+        self.assertTrue(matrix_rows({"include": [{"n": n} for n in range(257)]})[1])
+        self.assertTrue(
+            matrix_rows({"n": [1], "exclude": [{"n": n} for n in range(257)]})[1]
+        )
         self.assertEqual(
             matrix_rows({"include": [{"n": 1}, {"n": 2}]}),
             ([{"n": 1}, {"n": 2}], False),
