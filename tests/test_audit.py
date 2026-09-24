@@ -148,9 +148,9 @@ class AuditTests(unittest.TestCase):
             )
         )
 
-    def test_hashfiles_glob_must_match_the_whole_file_path(self):
-        self.assertFalse(matches("foo/package-lock.json", "foo"))
-        self.assertFalse(matches("foo/package-lock.json/child", "**/package-lock.json"))
+    def test_hashfiles_globs_include_descendants_of_matched_directories(self):
+        self.assertTrue(matches("foo/package-lock.json", "foo"))
+        self.assertTrue(matches("foo/package-lock.json/child", "**/package-lock.json"))
         self.assertTrue(matches("foo/package-lock.json", "**/package-lock.json"))
 
         web = self.root / "web"
@@ -161,10 +161,7 @@ class AuditTests(unittest.TestCase):
             .replace("node_modules", "web/node_modules")
             .replace("hashFiles('yarn.lock')", "hashFiles('web')")
         )
-        self.assertEqual(
-            [finding.missing for finding in self.scan(text)],
-            [["web/package-lock.json"]],
-        )
+        self.assertFalse(self.scan(text))
 
     def test_python_requirements_only_invalidates_cache_when_installed(self):
         (self.root / "pyproject.toml").write_text("[project]\nname='example'\n")
@@ -413,20 +410,8 @@ class AuditTests(unittest.TestCase):
         self.assertFalse(
             self.scan(text.replace("'src/*.ts'", "'src/**/*.ts'"), "medium")
         )
-        self.assertEqual(
-            [
-                finding.rule_id
-                for finding in self.scan(text.replace("'src/*.ts'", "'src'"), "medium")
-            ],
-            ["GHA-CACHE-004"],
-        )
-        self.assertEqual(
-            [
-                finding.rule_id
-                for finding in self.scan(text.replace("'src/*.ts'", "'src/'"), "medium")
-            ],
-            ["GHA-CACHE-004"],
-        )
+        self.assertFalse(self.scan(text.replace("'src/*.ts'", "'src'"), "medium"))
+        self.assertFalse(self.scan(text.replace("'src/*.ts'", "'src/'"), "medium"))
 
     def test_root_relative_hashfiles_pattern_is_supported(self):
         text = self.fixture("lockfile").replace("'yarn.lock'", "'/package-lock.json'")
@@ -743,13 +728,14 @@ class AuditTests(unittest.TestCase):
             [f.rule_id for f in self.scan(excluded, "medium")],
             ["GHA-CACHE-004"],
         )
-        self.assertFalse(
+        self.assertEqual(
             [
                 f.rule_id
                 for f in self.scan(
                     text.replace("'src/a.ts'", "'src/**', '!src'"), "medium"
                 )
-            ]
+            ],
+            ["GHA-CACHE-004"],
         )
         self.assertFalse(
             self.scan(

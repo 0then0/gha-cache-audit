@@ -82,7 +82,8 @@ def matches(path: str, pattern: str, ignore_case: bool = False) -> bool:
             }
         if not positions:
             return False
-    return len(parts) in positions
+    # @actions/glob implicitly includes descendants of matched directories.
+    return bool(positions)
 
 
 def hashed(path: str, pattern_groups: list[tuple[str, ...]], ignore_case=False) -> bool:
