@@ -262,8 +262,19 @@ class AuditTests(unittest.TestCase):
         self.assertFalse(self.scan(text.replace("'src/*.ts'", "'src'"), "medium"))
         self.assertFalse(self.scan(text.replace("'src/*.ts'", "'src/'"), "medium"))
 
-    def test_absolute_hashfiles_pattern_is_incomplete(self):
+    def test_root_relative_hashfiles_pattern_is_supported(self):
         text = self.fixture("lockfile").replace("'yarn.lock'", "'/package-lock.json'")
+        self.write(text)
+        status, output = self.cli("--format", "json")
+        report = json.loads(output)
+        self.assertEqual(status, 0)
+        self.assertFalse(report["findings"])
+        self.assertFalse(report["diagnostics"])
+
+    def test_absolute_hashfiles_pattern_outside_workspace_is_incomplete(self):
+        text = self.fixture("lockfile").replace(
+            "'yarn.lock'", "'C:/outside/package-lock.json'"
+        )
         self.write(text)
         status, output = self.cli("--format", "json")
         report = json.loads(output)
@@ -271,6 +282,84 @@ class AuditTests(unittest.TestCase):
         self.assertFalse(report["findings"])
         self.assertTrue(
             any("hashFiles patterns" in d["message"] for d in report["diagnostics"])
+        )
+
+    def test_hashfiles_case_matching_must_cover_every_matrix_platform(self):
+        (self.root / "package-lock.json").write_text("{}")
+        text = (
+            "jobs:\n  test:\n    runs-on: ${{ matrix.os }}\n"
+            "    strategy:\n      matrix:\n        os: [ubuntu-latest, windows-latest]\n"
+            "    steps:\n      - uses: actions/cache@v4\n        with:\n"
+            "          path: node_modules\n"
+            "          key: deps-${{ runner.os }}-${{ hashFiles('PACKAGE-LOCK.JSON') }}\n"
+        )
+        caches, diagnostics = parse(self.write(text), self.root)
+        self.assertFalse(diagnostics)
+        self.assertEqual(
+            [f.rule_id for cache in caches for f in analyze(cache, self.root)],
+            ["GHA-CACHE-003"],
+        )
+
+    def test_hashfiles_case_matching_recognizes_windows_self_hosted_labels(self):
+        text = (
+            "jobs:\n  test:\n    runs-on: [self-hosted, windows]\n"
+            "    steps:\n      - uses: actions/cache@v4\n        with:\n"
+            "          path: node_modules\n"
+            "          key: deps-${{ runner.os }}-${{ hashFiles('PACKAGE-LOCK.JSON') }}\n"
+        )
+        self.assertFalse(self.scan(text))
+
+    def test_runs_on_group_name_does_not_determine_platform(self):
+        text = (
+            "jobs:\n  test:\n    runs-on:\n"
+            "      group: windows\n      labels: ubuntu-latest\n"
+            "    steps:\n      - uses: actions/cache@v4\n        with:\n"
+            "          path: node_modules\n"
+            "          key: deps-${{ runner.os }}-${{ hashFiles('PACKAGE-LOCK.JSON') }}\n"
+        )
+        self.assertEqual([f.rule_id for f in self.scan(text)], ["GHA-CACHE-003"])
+
+    def test_runs_on_object_matrix_labels_are_checked_per_platform(self):
+        text = (
+            "jobs:\n  test:\n    runs-on:\n"
+            "      group: self-hosted\n      labels: ${{ matrix.os }}\n"
+            "    strategy:\n      matrix:\n        os: [ubuntu-latest, windows-latest]\n"
+            "    steps:\n      - uses: actions/cache@v4\n        with:\n"
+            "          path: node_modules\n"
+            "          key: deps-${{ runner.os }}-${{ hashFiles('PACKAGE-LOCK.JSON') }}\n"
+        )
+        self.assertEqual([f.rule_id for f in self.scan(text)], ["GHA-CACHE-003"])
+
+    def test_cache_path_cannot_read_outside_repository(self):
+        outside_name = f"outside-{self.root.name}"
+        outside = self.root.parent / outside_name
+        outside.mkdir()
+        self.addCleanup(outside.rmdir)
+        self.addCleanup((outside / "package-lock.json").unlink, missing_ok=True)
+        (outside / "package-lock.json").write_text("{}")
+        text = self.fixture("matrix").replace(
+            "node_modules", f"../{outside_name}/node_modules"
+        )
+        caches, diagnostics = parse(self.write(text), self.root)
+        self.assertFalse(caches)
+        self.assertTrue(
+            any("outside the repository root" in d.message for d in diagnostics)
+        )
+
+    def test_cache_path_symlink_cannot_escape_repository(self):
+        outside_name = f"outside-{self.root.name}"
+        outside = self.root.parent / outside_name
+        outside.mkdir()
+        self.addCleanup(outside.rmdir)
+        link = self.root / "node_modules"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except (NotImplementedError, OSError) as exc:
+            self.skipTest(f"directory symlinks are unavailable: {exc}")
+        caches, diagnostics = parse(self.write(self.fixture("matrix")), self.root)
+        self.assertFalse(caches)
+        self.assertTrue(
+            any("outside the repository root" in d.message for d in diagnostics)
         )
 
     def test_windows_hashfiles_matching_ignores_case(self):
@@ -783,6 +872,10 @@ class AuditTests(unittest.TestCase):
                 "node-version: ${{ matrix.node }}", "node-version: *a24"
             ),
             "uses": base.replace("uses: actions/setup-node@v6", "uses: *a24"),
+            "step id": base.replace(
+                "      - uses: actions/setup-node@v6",
+                "      - id: *a24\n        uses: actions/setup-node@v6",
+            ),
             "runner": base.replace("runs-on: ubuntu-latest", "runs-on: *a24"),
         }
         for field, workflow_text in variants.items():

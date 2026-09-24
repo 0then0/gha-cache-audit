@@ -55,8 +55,14 @@ def summarize_matrix(rows, dimensions):
 
 
 def matches(path: str, pattern: str, ignore_case: bool = False) -> bool:
-    if pattern.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:[/\\]", pattern):
+    if (
+        pattern.startswith("\\")
+        or pattern.startswith("//")
+        or re.match(r"^[A-Za-z]:[/\\]", pattern)
+    ):
         return False
+    if pattern.startswith("/"):
+        pattern = pattern[1:]
     parts = path.replace("\\", "/").lstrip("/").split("/")
     glob = pattern.removeprefix("./").strip("/").split("/")
     if ignore_case:
@@ -89,6 +95,18 @@ def hashed(path: str, pattern_groups: list[tuple[str, ...]], ignore_case=False) 
     return False
 
 
+def hashed_for_job(path, pattern_groups, rows, runner, aliases):
+    """A file must match hashFiles on every known matrix configuration."""
+    return all(
+        hashed(
+            path,
+            pattern_groups,
+            ignore_case=platform(row, runner, aliases) == "windows",
+        )
+        for row in (rows or [{}])
+    )
+
+
 def classify(path: str):
     normalized = path.replace("\\", "/").removeprefix("./").rstrip("/")
     if "${{" in normalized or any(c in normalized for c in "*?~"):
@@ -111,21 +129,35 @@ def varying(rows):
 
 
 def platform(row, runner, aliases):
-    runner_refs = dependencies(runner, aliases)
-    refs = [r for r in runner_refs.refs if r.startswith("matrix.")]
-    labels = (
-        [str(row.get(r[7:], "")).lower() for r in refs]
-        if refs
-        else [runner.lower()]
-        if isinstance(runner, str)
-        else []
+    labels = []
+    if isinstance(runner, str):
+        labels.append(runner.lower())
+    elif isinstance(runner, list):
+        labels.extend(
+            str(label).lower()
+            for label in runner
+            if not isinstance(label, (dict, list))
+        )
+    elif isinstance(runner, dict):
+        values = runner.get("labels", [])
+        values = values if isinstance(values, list) else [values]
+        labels.extend(
+            str(label).lower()
+            for label in values
+            if not isinstance(label, (dict, list))
+        )
+    runner_refs = dependencies(" ".join(labels), aliases)
+    labels.extend(
+        scalar(row.get(ref[7:], "")).lower()
+        for ref in runner_refs.refs
+        if ref.startswith("matrix.")
     )
     for label in labels:
-        if label.startswith("ubuntu-"):
+        if label == "linux" or label == "ubuntu" or label.startswith("ubuntu-"):
             return "linux"
-        if label.startswith("macos-"):
+        if label == "macos" or label.startswith("macos-"):
             return "macos"
-        if label.startswith("windows-"):
+        if label == "windows" or label.startswith("windows-"):
             return "windows"
     return None
 
@@ -207,10 +239,6 @@ def analyze(cache: Cache, root: Path, overrides=(), source_cache=None) -> list[F
         return findings
     revision_key = bool(key.refs & {"github.sha", "github.run_id", "github.run_number"})
     dimensions = varying(cache.matrix)
-    ignore_case = any(
-        platform(row, cache.runner, cache.aliases) not in {"linux", "macos"}
-        for row in cache.matrix
-    )
     path_inputs = dependencies("\n".join(cache.paths), cache.aliases)
     # Different cache paths contribute to the service's hidden cache version.
     covered = key.refs | path_inputs.refs
@@ -311,7 +339,13 @@ def analyze(cache: Cache, root: Path, overrides=(), source_cache=None) -> list[F
             elif (
                 not platform_refs
                 and not revision_key
-                and not hashed(cache.file, key.files, ignore_case)
+                and not hashed_for_job(
+                    cache.file,
+                    key.files,
+                    cache.matrix,
+                    cache.runner,
+                    cache.aliases,
+                )
                 and platform({}, cache.runner, cache.aliases)
             ):
                 add(
@@ -339,7 +373,17 @@ def analyze(cache: Cache, root: Path, overrides=(), source_cache=None) -> list[F
             ]
         # Multiple competing managers in one directory are ambiguous.
         missing_files = (
-            [f for f in expected if not hashed(f, key.files, ignore_case)]
+            [
+                f
+                for f in expected
+                if not hashed_for_job(
+                    f,
+                    key.files,
+                    cache.matrix,
+                    cache.runner,
+                    cache.aliases,
+                )
+            ]
             if custom or len(expected) == 1
             else []
         )
@@ -398,12 +442,27 @@ def analyze(cache: Cache, root: Path, overrides=(), source_cache=None) -> list[F
                     if source_cache is not None:
                         source_cache[project] = sources
                 if sources and not all(
-                    hashed(f, key.files, ignore_case) for f in sources
+                    hashed_for_job(
+                        f,
+                        key.files,
+                        cache.matrix,
+                        cache.runner,
+                        cache.aliases,
+                    )
+                    for f in sources
                 ):
                     missing_build.append(str(PurePosixPath(project) / "src/**"))
             configs = local_files(root, project, BUILD_CONFIGS)
             missing_build.extend(
-                f for f in configs if not hashed(f, key.files, ignore_case)
+                f
+                for f in configs
+                if not hashed_for_job(
+                    f,
+                    key.files,
+                    cache.matrix,
+                    cache.runner,
+                    cache.aliases,
+                )
             )
             if not revision_key and build_commands and missing_build:
                 add(

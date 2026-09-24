@@ -153,10 +153,12 @@ Limitations prioritize fewer false positives over coverage:
   expressions may hide a collision that this tool misses.
 - File glob support is a conservative approximation, not full `@actions/glob`.
   Ordered positive patterns and `!` exclusions are recognized; unusual patterns
-  can be missed. Absolute `hashFiles` patterns are reported as incomplete because
-  their meaning depends on the runner workspace path. Runtime version files and
-  arbitrary configuration-file build graphs are not inferred. Use explicit artifact
-  inputs where necessary.
+  can be missed. Windows drive-qualified and UNC `hashFiles` patterns are reported
+  as incomplete. A leading `/` is treated as repository-root-relative, as GitHub
+  Actions does. Runtime version files and arbitrary configuration-file build
+  graphs are not inferred. Use explicit artifact inputs where necessary.
+- Cache paths that resolve outside the repository root are reported as incomplete
+  and skipped; the auditor does not scan files outside the checkout.
 - No finding does not prove a cache is safe. Findings describe potential reuse,
   not proof that a cached directory necessarily contains incompatible files.
 

@@ -88,7 +88,7 @@ def dependencies(value, aliases=None, seen=frozenset(), budget=None) -> Inputs:
                         if tokens[j][0] == "string":
                             pattern = tokens[j][1][1:-1].replace("''", "'")
                             relative = pattern.strip().lstrip("!").strip()
-                            if relative.startswith(("/", "\\")) or re.match(
+                            if relative.startswith(("\\", "//")) or re.match(
                                 r"^[A-Za-z]:[/\\]", relative
                             ):
                                 result.opaque = True

@@ -46,3 +46,18 @@ jobs:
         run: |
           test -s "$AUDIT_REPORT"
           python -c 'import json,sys; run=json.load(open(sys.argv[1], encoding="utf-8"))["runs"][0]; assert not run["results"] and run["invocations"][0]["executionSuccessful"]' "$AUDIT_REPORT"
+      - id: audit-finding
+        uses: ./
+        continue-on-error: true
+        with:
+          path: tests/fixtures/matrix.yml
+          format: sarif
+      - name: Verify finding report and exit status
+        shell: bash
+        env:
+          AUDIT_OUTCOME: ${{ steps.audit-finding.outcome }}
+          AUDIT_REPORT: ${{ steps.audit-finding.outputs.report }}
+        run: |
+          test "$AUDIT_OUTCOME" = failure
+          test -s "$AUDIT_REPORT"
+          python -c 'import json,sys; run=json.load(open(sys.argv[1], encoding="utf-8"))["runs"][0]; assert [r["ruleId"] for r in run["results"]] == ["GHA-CACHE-001"]' "$AUDIT_REPORT"

@@ -100,6 +100,8 @@ def validate_scalar_fields(data):
             if not isinstance(step, dict):
                 continue
             env(step)
+            if "id" in step:
+                scalar(step["id"], "step id")
             for field in ("uses", "if", "run", "working-directory"):
                 if field in step:
                     scalar(step[field], field)
@@ -109,6 +111,21 @@ def validate_scalar_fields(data):
 
 def lines(value):
     return [line.strip() for line in str(value or "").splitlines() if line.strip()]
+
+
+def cache_path_within_root(root, path):
+    """Return whether a cache path resolves inside the checked-out workspace."""
+    normalized = path.replace("\\", "/")
+    if (
+        normalized.startswith("/")
+        or re.match(r"^[A-Za-z]:", normalized)
+        or ".." in Path(normalized).parts
+    ):
+        return False
+    try:
+        return (root / normalized).resolve().is_relative_to(root.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return False
 
 
 def condition(value):
@@ -409,6 +426,15 @@ def parse(path: Path, root: Path):
                         name,
                         getattr(step, "line", 1),
                         "cache definition requires non-empty path and key",
+                    )
+                )
+                continue
+            if any(not cache_path_within_root(root, path) for path in paths):
+                diagnostics.append(
+                    Diagnostic(
+                        name,
+                        getattr(inputs, "line", getattr(step, "line", 1)),
+                        "cache path resolves outside the repository root; analysis skipped",
                     )
                 )
                 continue
