@@ -190,6 +190,11 @@ class AuditTests(unittest.TestCase):
             ],
             ["GHA-CACHE-003"],
         )
+        disabled_install = workflow_text.replace(
+            "      - run: pip install .",
+            "      - if: false\n        run: pip install -r requirements.txt",
+        )
+        self.assertFalse(self.scan(disabled_install))
         self.assertFalse(
             self.scan(
                 workflow_text.replace(
@@ -602,6 +607,18 @@ class AuditTests(unittest.TestCase):
         report = json.loads(output)
         self.assertEqual(status, 1)
         self.assertEqual([f["rule_id"] for f in report["findings"]], ["GHA-CACHE-003"])
+
+    def test_nested_custom_workflow_without_git_requires_explicit_root(self):
+        project = self.root / "project"
+        directory = project / "ci"
+        directory.mkdir(parents=True)
+        path = directory / "test.yml"
+        path.write_text(self.fixture("lockfile"))
+        with patch("gha_cache_audit.cli.Path.cwd", return_value=self.root):
+            status, output = main_output(str(path), "--format", "json")
+        self.assertEqual(status, 2)
+        self.assertIn("cannot infer repository root", output)
+        self.assertIn("--root", output)
 
     def test_workflow_directory_uses_explicit_root_without_git_metadata(self):
         directory = self.root / "ci"

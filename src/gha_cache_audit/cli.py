@@ -71,10 +71,12 @@ def discover(target, workflow_directory=None, repository_root=None):
             root = target.parent.parent.parent.resolve()
         elif checkout is not None:
             root = checkout.resolve()
-        elif resolved_target.is_relative_to(Path.cwd().resolve()):
-            root = Path.cwd().resolve()
+        elif resolved_target.parent == Path.cwd().resolve():
+            root = resolved_target.parent
         else:
-            root = target.parent.resolve()
+            raise ValueError(
+                "cannot infer repository root for this workflow file; pass --root"
+            )
         if not resolved_target.is_relative_to(root):
             raise ValueError(
                 f"workflow path resolves outside the repository root: {target}"

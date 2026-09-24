@@ -324,7 +324,7 @@ def parse(path: Path, root: Path):
             )
             if kind:
                 setups.setdefault(kind, []).append(step)
-            if "run" in step:
+            if "run" in step and condition(step.get("if")) != "never":
                 command = dict(step)
                 command.setdefault(
                     "working-directory",
