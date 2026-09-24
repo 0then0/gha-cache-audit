@@ -298,17 +298,19 @@ def parse(path: Path, root: Path):
                 "env." + str(k).lower(): v for k, v in as_map(setup.get("env")).items()
             }
             deps = dependencies(value, aliases | setup_env)
-            runtimes[kind] = (
-                " ".join("${{ " + r + " }}" for r in deps.refs)
-                if not deps.opaque
-                else "${{ unknown.runtime }}"
-            )
             arch = dependencies(inputs.get("architecture", ""), aliases | setup_env)
-            runtimes[kind + ".arch"] = (
-                " ".join("${{ " + r + " }}" for r in arch.refs)
-                if not arch.opaque
-                else "${{ unknown.arch }}"
-            )
+            if deps.opaque or arch.opaque:
+                uncertain = True
+                diagnostics.append(
+                    Diagnostic(
+                        name,
+                        getattr(setup, "line", 1),
+                        f"job {job_id}: unsupported runtime setup input; cache analysis skipped",
+                    )
+                )
+                continue
+            runtimes[kind] = " ".join("${{ " + r + " }}" for r in deps.refs)
+            runtimes[kind + ".arch"] = " ".join("${{ " + r + " }}" for r in arch.refs)
             if setup.get("id"):
                 aliases[f"steps.{str(setup['id']).lower()}.outputs.{kind}-version"] = (
                     runtimes[kind]
@@ -369,7 +371,7 @@ def parse(path: Path, root: Path):
                     Diagnostic(
                         name,
                         getattr(step, "line", 1),
-                        "cache key or path has unsupported expressions; analysis skipped",
+                        "cache key or path has unsupported expressions or hashFiles patterns; analysis skipped",
                     )
                 )
                 continue

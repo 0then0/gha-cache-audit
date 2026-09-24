@@ -255,9 +255,30 @@ class AuditTests(unittest.TestCase):
         self.assertFalse(
             self.scan(text.replace("'src/*.ts'", "'src/**/*.ts'"), "medium")
         )
-        self.assertFalse(self.scan(text.replace("'src/*.ts'", "'/src/*.ts'"), "medium"))
         self.assertFalse(self.scan(text.replace("'src/*.ts'", "'src'"), "medium"))
         self.assertFalse(self.scan(text.replace("'src/*.ts'", "'src/'"), "medium"))
+
+    def test_absolute_hashfiles_pattern_is_incomplete(self):
+        text = self.fixture("lockfile").replace("'yarn.lock'", "'/package-lock.json'")
+        self.write(text)
+        status, output = self.cli("--format", "json")
+        report = json.loads(output)
+        self.assertEqual(status, 2)
+        self.assertFalse(report["findings"])
+        self.assertTrue(
+            any("hashFiles patterns" in d["message"] for d in report["diagnostics"])
+        )
+
+    def test_windows_hashfiles_matching_ignores_case(self):
+        (self.root / "src").mkdir()
+        (self.root / "src/a.ts").write_text("a")
+        text = self.fixture("build").replace("'package-lock.json'", "'SRC/*.TS'")
+        self.assertEqual(
+            [f.rule_id for f in self.scan(text, "medium")], ["GHA-CACHE-004"]
+        )
+        self.assertFalse(
+            self.scan(text.replace("ubuntu-latest", "windows-latest"), "medium")
+        )
 
     def test_hashfiles_pattern_order_and_call_boundaries(self):
         (self.root / "src").mkdir()
@@ -669,6 +690,76 @@ class AuditTests(unittest.TestCase):
         )
         _, diagnostics = parse(self.write(deep), self.root)
         self.assertTrue(any("deeply nested" in d.message for d in diagnostics))
+
+    def test_long_env_alias_chain_is_diagnostic(self):
+        aliases = "".join(f"  A{i}: ${{{{ env.A{i + 1} }}}}\n" for i in range(1200))
+        self.write(
+            "env:\n"
+            + aliases
+            + "  A1200: final\n"
+            + "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n"
+            + "      - uses: actions/cache@v4\n        with:\n"
+            + "          path: node_modules\n          key: ${{ env.A0 }}\n"
+        )
+        status, output = self.cli("--format", "json")
+        report = json.loads(output)
+        self.assertEqual(status, 2)
+        self.assertTrue(
+            any(
+                "unsupported expressions" in d["message"] for d in report["diagnostics"]
+            )
+        )
+        text = self.fixture("matrix").replace("matrix.node", "env.A0")
+        self.write("env:\n" + aliases + "  A1200: final\n" + text)
+        status, output = self.cli("--format", "json")
+        report = json.loads(output)
+        self.assertEqual(status, 2)
+        self.assertTrue(
+            any(
+                "unsupported runtime setup input" in d["message"]
+                for d in report["diagnostics"]
+            )
+        )
+
+    def test_shared_env_alias_tree_is_diagnostic(self):
+        aliases = "".join(
+            f"  A{i}: ${{{{ env.A{i + 1} }}}}-${{{{ env.A{i + 1} }}}}\n"
+            for i in range(22)
+        )
+        self.write(
+            "env:\n"
+            + aliases
+            + "  A22: final\n"
+            + "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n"
+            + "      - uses: actions/cache@v4\n        with:\n"
+            + "          path: node_modules\n          key: ${{ env.A0 }}\n"
+        )
+        status, output = self.cli("--format", "json")
+        self.assertEqual(status, 2)
+        self.assertTrue(
+            any(
+                "unsupported expressions" in d["message"]
+                for d in json.loads(output)["diagnostics"]
+            )
+        )
+
+    def test_repeated_large_env_alias_is_diagnostic(self):
+        value = "x" * 10_000
+        references = "${{ env.A }}" * 250
+        self.write(
+            f"env:\n  A: {value}\n"
+            + "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n"
+            + "      - uses: actions/cache@v4\n        with:\n"
+            + f"          path: node_modules\n          key: {references}\n"
+        )
+        status, output = self.cli("--format", "json")
+        self.assertEqual(status, 2)
+        self.assertTrue(
+            any(
+                "unsupported expressions" in d["message"]
+                for d in json.loads(output)["diagnostics"]
+            )
+        )
 
     def cli(self, *args):
         output = io.StringIO()

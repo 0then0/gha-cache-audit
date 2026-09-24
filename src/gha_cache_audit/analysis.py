@@ -32,9 +32,14 @@ def scalar(value):
     return str(value)
 
 
-def matches(path: str, pattern: str) -> bool:
+def matches(path: str, pattern: str, ignore_case: bool = False) -> bool:
+    if pattern.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:[/\\]", pattern):
+        return False
     parts = path.replace("\\", "/").lstrip("/").split("/")
     glob = pattern.removeprefix("./").strip("/").split("/")
+    if ignore_case:
+        parts = [part.lower() for part in parts]
+        glob = [part.lower() for part in glob]
     positions = {0}
     for segment in glob:
         if segment == "**":
@@ -50,12 +55,12 @@ def matches(path: str, pattern: str) -> bool:
     return bool(positions)
 
 
-def hashed(path: str, pattern_groups: list[tuple[str, ...]]) -> bool:
+def hashed(path: str, pattern_groups: list[tuple[str, ...]], ignore_case=False) -> bool:
     for patterns in pattern_groups:
         included = False
         for pattern in patterns:
             bangs = len(pattern) - len(pattern.lstrip("!"))
-            if matches(path, pattern[bangs:]):
+            if matches(path, pattern[bangs:], ignore_case):
                 included = bangs % 2 == 0
         if included:
             return True
@@ -178,6 +183,10 @@ def analyze(cache: Cache, root: Path, overrides=(), source_cache=None) -> list[F
         return findings
     revision_key = bool(key.refs & {"github.sha", "github.run_id", "github.run_number"})
     dimensions = varying(cache.matrix)
+    ignore_case = any(
+        platform(row, cache.runner, cache.aliases) not in {"linux", "macos"}
+        for row in cache.matrix
+    )
     path_inputs = dependencies("\n".join(cache.paths), cache.aliases)
     # Different cache paths contribute to the service's hidden cache version.
     covered = key.refs | path_inputs.refs
@@ -276,7 +285,7 @@ def analyze(cache: Cache, root: Path, overrides=(), source_cache=None) -> list[F
             elif (
                 not platform_refs
                 and not revision_key
-                and not hashed(cache.file, key.files)
+                and not hashed(cache.file, key.files, ignore_case)
                 and platform({}, cache.runner, cache.aliases)
             ):
                 add(
@@ -304,7 +313,7 @@ def analyze(cache: Cache, root: Path, overrides=(), source_cache=None) -> list[F
             ]
         # Multiple competing managers in one directory are ambiguous.
         missing_files = (
-            [f for f in expected if not hashed(f, key.files)]
+            [f for f in expected if not hashed(f, key.files, ignore_case)]
             if custom or len(expected) == 1
             else []
         )
@@ -362,10 +371,14 @@ def analyze(cache: Cache, root: Path, overrides=(), source_cache=None) -> list[F
                     )
                     if source_cache is not None:
                         source_cache[project] = sources
-                if sources and not all(hashed(f, key.files) for f in sources):
+                if sources and not all(
+                    hashed(f, key.files, ignore_case) for f in sources
+                ):
                     missing_build.append(str(PurePosixPath(project) / "src/**"))
             configs = local_files(root, project, BUILD_CONFIGS)
-            missing_build.extend(f for f in configs if not hashed(f, key.files))
+            missing_build.extend(
+                f for f in configs if not hashed(f, key.files, ignore_case)
+            )
             if not revision_key and build_commands and missing_build:
                 add(
                     "GHA-CACHE-004",

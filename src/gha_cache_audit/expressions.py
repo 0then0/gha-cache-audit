@@ -11,6 +11,9 @@ TOKEN = re.compile(
     r"\s+|(?P<string>'(?:''|[^'])*')|(?P<name>[A-Za-z_][A-Za-z_0-9-]*)|(?P<number>\d+(?:\.\d+)?)|(?P<symbol>.)",
     re.DOTALL,
 )
+MAX_ALIAS_DEPTH = 100
+MAX_ALIAS_EXPANSIONS = 1000
+MAX_EXPANDED_CHARS = 2_000_000
 
 
 @dataclass
@@ -47,10 +50,17 @@ def bodies(text: str):
             return
 
 
-def dependencies(value, aliases=None, seen=frozenset()) -> Inputs:
+def dependencies(value, aliases=None, seen=frozenset(), budget=None) -> Inputs:
     aliases = aliases or {}
     result = Inputs()
-    for body in bodies(str(value)):
+    budget = [MAX_ALIAS_EXPANSIONS, MAX_EXPANDED_CHARS] if budget is None else budget
+    text = str(value)
+    budget[0] -= 1
+    budget[1] -= len(text)
+    if len(seen) >= MAX_ALIAS_DEPTH or budget[0] < 0 or budget[1] < 0:
+        result.opaque = True
+        return result
+    for body in bodies(text):
         if body is None:
             result.opaque = True
             continue
@@ -73,7 +83,13 @@ def dependencies(value, aliases=None, seen=frozenset()) -> Inputs:
                     patterns = []
                     while j < len(tokens) and tokens[j][1] != ")":
                         if tokens[j][0] == "string":
-                            patterns.append(tokens[j][1][1:-1].replace("''", "'"))
+                            pattern = tokens[j][1][1:-1].replace("''", "'")
+                            relative = pattern.strip().lstrip("!").strip()
+                            if relative.startswith(("/", "\\")) or re.match(
+                                r"^[A-Za-z]:[/\\]", relative
+                            ):
+                                result.opaque = True
+                            patterns.append(pattern)
                         elif tokens[j][1] != ",":
                             result.opaque = True
                         j += 1
@@ -115,7 +131,9 @@ def dependencies(value, aliases=None, seen=frozenset()) -> Inputs:
                 else:
                     if name.startswith("env."):
                         result.refs.add(name)
-                    result.merge(dependencies(aliases[name], aliases, seen | {name}))
+                    result.merge(
+                        dependencies(aliases[name], aliases, seen | {name}, budget)
+                    )
             elif name.startswith(("matrix.", "runner.")) or name in {
                 "github.sha",
                 "github.run_id",

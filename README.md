@@ -144,15 +144,19 @@ Limitations prioritize fewer false positives over coverage:
 - Unknown key references (including arbitrary step outputs), conditional or
   multiple runtime setup steps, conditional jobs with caches, conditional cache
   steps, and opaque paths are conservatively skipped with a diagnostic and exit
-  code 2. Statically `true`, `false` and `always()` conditions are handled directly.
+  code 2. Deep or repeatedly expanded environment aliases are also bounded and
+  reported as incomplete. Statically `true`, `false` and `always()` conditions
+  are handled directly.
 - No shell interpretation, transitive task graph, remote actions, containers,
   arbitrary package-manager scripts or dynamic `GITHUB_ENV` evaluation.
 - An expression dependency is not proof of an injective expression. Complex
   expressions may hide a collision that this tool misses.
 - File glob support is a conservative approximation, not full `@actions/glob`.
   Ordered positive patterns and `!` exclusions are recognized; unusual patterns
-  can be missed. Runtime version files and arbitrary configuration-file build graphs
-  are not inferred. Use explicit artifact inputs where necessary.
+  can be missed. Absolute `hashFiles` patterns are reported as incomplete because
+  their meaning depends on the runner workspace path. Runtime version files and
+  arbitrary configuration-file build graphs are not inferred. Use explicit artifact
+  inputs where necessary.
 - No finding does not prove a cache is safe. Findings describe potential reuse,
   not proof that a cached directory necessarily contains incompatible files.
 
