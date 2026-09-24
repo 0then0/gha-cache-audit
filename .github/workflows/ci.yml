@@ -132,3 +132,24 @@ jobs:
           fi
           gh release upload "$tag" dist/* --clobber
           gh release edit "$tag" --draft=false
+  pypi-publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release-build
+    runs-on: ubuntu-26.04
+    environment:
+      name: pypi
+      url: https://pypi.org/p/gha-cache-auditor
+    permissions:
+      id-token: write
+    steps:
+      - name: Download release distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-distributions
+          path: dist
+      - name: Verify distribution checksums
+        run: (cd dist && sha256sum --check SHA256SUMS)
+      - name: Remove GitHub Release checksums
+        run: rm dist/SHA256SUMS
+      - name: Publish distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
