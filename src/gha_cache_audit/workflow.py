@@ -60,6 +60,53 @@ def as_map(value):
     return value if isinstance(value, dict) else {}
 
 
+def validate_scalar_fields(data):
+    """Reject collections before scalar consumers can expand shared YAML aliases."""
+
+    def scalar(value, field):
+        if isinstance(value, (dict, list)):
+            raise ValueError(f"{field} must be a scalar")
+
+    def env(scope):
+        for value in as_map(scope.get("env")).values():
+            scalar(value, "env value")
+
+    def defaults(scope):
+        run = as_map(as_map(scope.get("defaults")).get("run"))
+        if "working-directory" in run:
+            scalar(run["working-directory"], "working-directory")
+
+    env(data)
+    defaults(data)
+    for job in data["jobs"].values():
+        if not isinstance(job, dict):
+            continue
+        env(job)
+        defaults(job)
+        if "if" in job:
+            scalar(job["if"], "job condition")
+        runner = job.get("runs-on")
+        if isinstance(runner, list):
+            for label in runner:
+                scalar(label, "runs-on label")
+        elif isinstance(runner, dict):
+            for label in runner.values():
+                if isinstance(label, list):
+                    for item in label:
+                        scalar(item, "runs-on label")
+                else:
+                    scalar(label, "runs-on label")
+        for step in job.get("steps", []) if isinstance(job.get("steps"), list) else []:
+            if not isinstance(step, dict):
+                continue
+            env(step)
+            for field in ("uses", "if", "run", "working-directory"):
+                if field in step:
+                    scalar(step[field], field)
+            for value in as_map(step.get("with")).values():
+                scalar(value, "action input")
+
+
 def lines(value):
     return [line.strip() for line in str(value or "").splitlines() if line.strip()]
 
@@ -197,6 +244,7 @@ def parse(path: Path, root: Path):
         validate_data(data)
         if not isinstance(data, dict) or not isinstance(data.get("jobs"), dict):
             raise ValueError("expected a workflow mapping with jobs")
+        validate_scalar_fields(data)
     except (OSError, UnicodeError, ValueError, yaml.YAMLError, RecursionError) as exc:
         mark = getattr(exc, "problem_mark", None)
         return [], [Diagnostic(name, mark.line + 1 if mark else 1, str(exc))]

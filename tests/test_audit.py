@@ -1,10 +1,14 @@
 import contextlib
 import io
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+import yaml
 
 from gha_cache_audit import workflow
 from gha_cache_audit.analysis import analyze
@@ -761,6 +765,38 @@ class AuditTests(unittest.TestCase):
             )
         )
 
+    def test_shared_yaml_collection_in_scalar_fields_is_diagnostic(self):
+        aliases = "a0: &a0 [x]\n" + "".join(
+            f"a{i}: &a{i} [*a{i - 1}, *a{i - 1}]\n" for i in range(1, 25)
+        )
+        base = self.fixture("matrix")
+        variants = {
+            "env alias": (
+                "env:\n  BIG: *a24\n"
+                + base.replace("hashFiles('package-lock.json')", "env.BIG")
+            ),
+            "key": base.replace(
+                "key: deps-${{ hashFiles('package-lock.json') }}", "key: *a24"
+            ),
+            "path": base.replace("path: node_modules", "path: *a24"),
+            "runtime": base.replace(
+                "node-version: ${{ matrix.node }}", "node-version: *a24"
+            ),
+            "uses": base.replace("uses: actions/setup-node@v6", "uses: *a24"),
+            "runner": base.replace("runs-on: ubuntu-latest", "runs-on: *a24"),
+        }
+        for field, workflow_text in variants.items():
+            with self.subTest(field=field):
+                self.write(aliases + workflow_text)
+                status, output = self.cli("--format", "json")
+                self.assertEqual(status, 2)
+                self.assertTrue(
+                    any(
+                        "must be a scalar" in d["message"]
+                        for d in json.loads(output)["diagnostics"]
+                    )
+                )
+
     def cli(self, *args):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
@@ -859,6 +895,54 @@ class ExpressionTests(unittest.TestCase):
             matrix_rows({"include": [{"n": 1}, {"n": 2}]}),
             ([{"n": 1}, {"n": 2}], False),
         )
+
+
+class ActionTests(unittest.TestCase):
+    def test_python_module_invocations_ignore_checkout(self):
+        action = yaml.safe_load((FIXTURES.parent.parent / "action.yml").read_text())
+        script = action["runs"]["steps"][0]["run"]
+        for command in (
+            "python -I -m venv",
+            '"$audit_python" -I -m pip',
+            '"$audit_python" -I -m gha_cache_audit',
+            '"$audit_python" -I -c',
+        ):
+            self.assertIn(command, script)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("venv", "pip", "gha_cache_audit", "secrets"):
+                (root / f"{name}.py").write_text(
+                    'raise RuntimeError("checkout module executed")\n'
+                )
+            environment = root / "isolated"
+            created = subprocess.run(
+                [sys.executable, "-I", "-m", "venv", str(environment)],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            venv_python = environment / "bin/python"
+            if not venv_python.is_file():
+                venv_python = environment / "Scripts/python.exe"
+            for python, args in (
+                (venv_python, ("-m", "pip", "--version")),
+                (sys.executable, ("-m", "gha_cache_audit", "--version")),
+                (venv_python, ("-c", "import secrets; print(secrets.token_hex(4))")),
+            ):
+                with self.subTest(args=args):
+                    result = subprocess.run(
+                        [python, "-I", *args],
+                        cwd=root,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

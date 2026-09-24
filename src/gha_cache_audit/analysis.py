@@ -94,7 +94,9 @@ def platform(row, runner, aliases):
     labels = (
         [str(row.get(r[7:], "")).lower() for r in refs]
         if refs
-        else [str(runner).lower()]
+        else [runner.lower()]
+        if isinstance(runner, str)
+        else []
     )
     for label in labels:
         if label.startswith("ubuntu-"):

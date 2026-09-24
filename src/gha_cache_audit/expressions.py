@@ -53,6 +53,9 @@ def bodies(text: str):
 def dependencies(value, aliases=None, seen=frozenset(), budget=None) -> Inputs:
     aliases = aliases or {}
     result = Inputs()
+    if not isinstance(value, (str, int, float, bool, type(None))):
+        result.opaque = True
+        return result
     budget = [MAX_ALIAS_EXPANSIONS, MAX_EXPANDED_CHARS] if budget is None else budget
     text = str(value)
     budget[0] -= 1
