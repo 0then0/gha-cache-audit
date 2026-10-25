@@ -1,8 +1,21 @@
-.venv/
-.ruff_cache/
+# Python bytecode
 __pycache__/
 *.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+
+# Build and packaging output
 *.egg-info/
 build/
 dist/
+
+# Tool caches
+.ruff_cache/
+
+# Generated reports
 *.sarif
+
+# macOS metadata
+.DS_Store

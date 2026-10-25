@@ -1,5 +1,9 @@
 # Contributing
 
+By participating, you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+Report security vulnerabilities according to [SECURITY.md](SECURITY.md), not in
+a public issue.
+
 ## Development setup
 
 Python 3.11+ and `uv` are required. Install the locked development environment:

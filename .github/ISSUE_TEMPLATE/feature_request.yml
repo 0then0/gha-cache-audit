@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest a behavior or workflow pattern the auditor should support.
+title: "feature: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Describe the workflow or cache behavior you need help analyzing.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What should the auditor report or understand?
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: Minimal workflow example
+      description: Remove secrets and unrelated steps.
+      render: yaml
+    validations:
+      required: false

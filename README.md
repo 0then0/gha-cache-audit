@@ -1,6 +1,11 @@
+![GHA Cache Auditor icon](https://raw.githubusercontent.com/0then0/gha-cache-audit/main/assets/gha-cache-auditor.svg)
+
 # GHA Cache Auditor
 
 [![PyPI version](https://img.shields.io/pypi/v/gha-cache-auditor)](https://pypi.org/project/gha-cache-auditor/)
+[![Python versions](https://img.shields.io/pypi/pyversions/gha-cache-auditor)](https://pypi.org/project/gha-cache-auditor/)
+[![CI](https://github.com/0then0/gha-cache-audit/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/0then0/gha-cache-audit/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/0then0/gha-cache-audit)](https://github.com/0then0/gha-cache-audit/blob/main/LICENSE)
 
 GHA Cache Auditor statically checks GitHub Actions workflows for cache keys and
 restore prefixes that may reuse incompatible files. It does not run workflows,
@@ -94,5 +99,8 @@ report file, which can be uploaded in a following step.
   supported workflows, rule details, configuration, output, and limitations.
 - [Contributing](https://github.com/0then0/gha-cache-audit/blob/main/CONTRIBUTING.md):
   development checks, tests, and release process.
+- [Security policy](https://github.com/0then0/gha-cache-audit/blob/main/SECURITY.md)
+- [Code of Conduct](https://github.com/0then0/gha-cache-audit/blob/main/CODE_OF_CONDUCT.md)
+- [Changelog](https://github.com/0then0/gha-cache-audit/blob/main/CHANGELOG.md)
 
 Licensed under Apache-2.0; see the [LICENSE](https://github.com/0then0/gha-cache-audit/blob/main/LICENSE).

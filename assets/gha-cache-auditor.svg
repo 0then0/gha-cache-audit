@@ -1,0 +1,41 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="128"
+  height="128"
+  viewBox="0 0 128 128"
+  role="img"
+  aria-labelledby="title desc"
+>
+  <title id="title">GHA Cache Auditor</title>
+  <desc id="desc">Cache layers inspected with a magnifying glass and check mark.</desc>
+  <rect width="128" height="128" rx="26" fill="#f3f7fa" />
+  <g
+    fill="#ffffff"
+    stroke="#29465f"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="4"
+  >
+    <rect x="20" y="24" width="72" height="22" rx="6" />
+    <rect x="20" y="50" width="72" height="22" rx="6" />
+    <rect x="20" y="76" width="72" height="22" rx="6" />
+  </g>
+  <g fill="#4c8799">
+    <circle cx="31" cy="35" r="2.5" />
+    <circle cx="31" cy="61" r="2.5" />
+    <circle cx="31" cy="87" r="2.5" />
+  </g>
+  <g fill="none" stroke="#29465f" stroke-linecap="round" stroke-width="4">
+    <path d="M40 35h28M40 61h20M40 87h16" />
+  </g>
+  <circle cx="78" cy="74" r="20" fill="#f3f7fa" stroke="#25867d" stroke-width="5" />
+  <path
+    d="m69 74 6 6 12-13"
+    fill="none"
+    stroke="#29465f"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="4.5"
+  />
+  <path d="m93 89 16 16" fill="none" stroke="#25867d" stroke-linecap="round" stroke-width="6" />
+</svg>
