@@ -7,6 +7,7 @@ from pathlib import Path
 
 import yaml
 
+from .analysis import cache_path_limitation
 from .expressions import dependencies
 from .model import Cache, Diagnostic
 
@@ -386,7 +387,7 @@ def parse(path: Path, root: Path):
                 aliases[f"steps.{str(setup['id']).lower()}.outputs.{kind}-version"] = (
                     runtimes[kind]
                 )
-        for step in steps:
+        for step_index, step in enumerate(steps, 1):
             action = str(step.get("uses", "")).split("@")[0].lower()
             inputs = as_map(step.get("with"))
             implicit = action in {
@@ -444,17 +445,40 @@ def parse(path: Path, root: Path):
                     )
                 )
                 continue
-            if not implicit and (
-                dependencies(key, env).opaque or any("${{" in path for path in paths)
-            ):
+            if not implicit and dependencies(key, env).opaque:
                 diagnostics.append(
                     Diagnostic(
                         name,
                         getattr(step, "line", 1),
-                        "cache key or path has unsupported expressions or hashFiles patterns; analysis skipped",
+                        "cache key has unsupported expressions or hashFiles patterns; analysis skipped",
                     )
                 )
                 continue
+            restore_keys = lines(inputs.get("restore-keys"))
+            if not implicit:
+                location = getattr(inputs, "line", getattr(step, "line", 1))
+                context = f"job {job_id}, cache step {step.get('id') or step.get('name') or step_index}"
+                for cache_path in dict.fromkeys(paths):
+                    limitation = cache_path_limitation(cache_path)
+                    if limitation:
+                        diagnostics.append(
+                            Diagnostic(
+                                name,
+                                location,
+                                f"{context}: {limitation} {cache_path!r}; "
+                                "artifact classification and inferred dependency checks skipped for this path",
+                            )
+                        )
+                for prefix in dict.fromkeys(restore_keys):
+                    if dependencies(prefix, env).opaque:
+                        diagnostics.append(
+                            Diagnostic(
+                                name,
+                                location,
+                                f"{context}: restore prefix {prefix!r} has unsupported expressions; "
+                                "GHA-CACHE-005 compatibility check skipped for this prefix",
+                            )
+                        )
             caches.append(
                 Cache(
                     name,
@@ -463,7 +487,7 @@ def parse(path: Path, root: Path):
                     action,
                     paths,
                     key,
-                    lines(inputs.get("restore-keys")),
+                    restore_keys,
                     env,
                     runtimes,
                     rows,

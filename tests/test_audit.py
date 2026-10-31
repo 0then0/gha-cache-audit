@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -1033,11 +1034,279 @@ class AuditTests(unittest.TestCase):
         )
 
     def test_download_stores_are_not_installed_trees(self):
-        for path in ("~/.npm", "~/.cache/pip", "~/.cache/uv", ".pnpm-store"):
+        for path in (
+            "~/.npm",
+            "~/.npm/_cacache",
+            "~/.npm/**",
+            "~/.npm/**/node_modules",
+            "~/.cache/pip",
+            "~/.cache/pip/**",
+            "~/.cache/uv",
+            "~/.cache/uv/**",
+            "~/.cache/yarn",
+            "~/.local/share/pnpm/store",
+            "~/.pnpm-store",
+            ".pnpm-store",
+            ".pnpm-store/**",
+            ".pnpm-store/**/node_modules",
+        ):
             with self.subTest(path=path):
                 self.assertFalse(
                     self.scan(self.fixture("matrix").replace("node_modules", path))
                 )
+                status, output = self.cli("--format", "json")
+                self.assertEqual(status, 0)
+                report = json.loads(output)
+                self.assertEqual(report["findings"], [])
+                self.assertEqual(report["diagnostics"], [])
+
+    def test_literal_braces_and_extglob_names_retain_artifact_checks(self):
+        text = self.fixture("lockfile").replace(
+            "deps-${{ hashFiles('yarn.lock') }}", "deps-${{ runner.os }}"
+        )
+        for directory in ("custom{data}", "custom+(data)", "custom@(data)"):
+            with self.subTest(directory=directory):
+                parent = self.root / directory
+                parent.mkdir()
+                (parent / "package-lock.json").write_text("{}")
+                for installed in (False, True):
+                    path = directory + ("/node_modules" if installed else "")
+                    self.write(text.replace("path: node_modules", f"path: '{path}'"))
+                    status, output = self.cli("--format", "json")
+                    report = json.loads(output)
+                    self.assertEqual(status, int(installed))
+                    self.assertEqual(report["diagnostics"], [])
+                    self.assertEqual(
+                        [f["rule_id"] for f in report["findings"]],
+                        ["GHA-CACHE-003"] if installed else [],
+                    )
+                    if installed:
+                        self.assertEqual(report["findings"][0]["cache_path"], path)
+                        self.assertEqual(report["findings"][0]["line"], 7)
+
+    def test_cache_path_coverage_is_explicit(self):
+        text = self.fixture("lockfile").replace(
+            "deps-${{ hashFiles('yarn.lock') }}", "deps-${{ runner.os }}"
+        )
+        for path, reason, expected_status in (
+            ("node_modules", None, 1),
+            ("**/node_modules", "glob cache path", 2),
+            ("packages/?/node_modules", "glob cache path", 2),
+            ("packages/[ab]/node_modules", "glob cache path", 2),
+            ("~/.npm-other/**", "glob cache path", 2),
+            (".pnpm-store-other/**", "glob cache path", 2),
+            ("!node_modules", "glob cache path", 2),
+            ("~/project/node_modules", "home-directory cache path", 2),
+            ("${{ env.CACHE_PATH }}", "expression cache path", 2),
+            ("unknown-static-directory", None, 0),
+        ):
+            with self.subTest(path=path):
+                self.write(text.replace("path: node_modules", f"path: '{path}'"))
+                status, output = self.cli("--format", "json")
+                report = json.loads(output)
+                self.assertEqual(status, expected_status)
+                self.assertEqual(len(report["caches"]), 1)
+                if reason:
+                    self.assertEqual(report["findings"], [])
+                    self.assertEqual(len(report["diagnostics"]), 1)
+                    diagnostic = report["diagnostics"][0]
+                    self.assertEqual(diagnostic["file"], ".github/workflows/test.yml")
+                    self.assertEqual(diagnostic["line"], 7)
+                    for detail in (
+                        reason,
+                        path,
+                        "job test",
+                        "cache step 1",
+                        "artifact",
+                    ):
+                        self.assertIn(detail, diagnostic["message"])
+                    status, summary = self.cli()
+                    self.assertEqual(status, 2)
+                    self.assertIn("Analysis incomplete", summary)
+                    self.assertIn("1 cache definitions discovered", summary)
+                    self.assertNotIn("No findings", summary)
+                    self.assertNotIn("definitions analyzed", summary)
+                else:
+                    self.assertEqual(report["diagnostics"], [])
+                    self.assertEqual(
+                        [f["rule_id"] for f in report["findings"]],
+                        ["GHA-CACHE-003"] if path == "node_modules" else [],
+                    )
+        # No installed tree exists in this fixture, including for the glob case.
+        self.assertFalse((self.root / "node_modules").exists())
+
+    def test_opaque_paths_preserve_other_paths_and_key_findings(self):
+        for path in ("**/node_modules", "~/project/node_modules", "${{ env.PATH }}"):
+            with self.subTest(path=path):
+                text = (
+                    self.fixture("matrix")
+                    .replace(
+                        "path: node_modules",
+                        f"path: |\n            node_modules\n            {path}\n            {path}",
+                    )
+                    .replace(
+                        "      - uses: actions/cache",
+                        "      - id: deps\n        uses: actions/cache",
+                    )
+                )
+                self.write(text)
+                status, output = self.cli("--format", "json")
+                report = json.loads(output)
+                self.assertEqual(status, 2)
+                self.assertEqual(
+                    [f["rule_id"] for f in report["findings"]], ["GHA-CACHE-001"]
+                )
+                self.assertEqual(report["findings"][0]["cache_path"], "node_modules")
+                self.assertEqual(len(report["diagnostics"]), 1)
+                self.assertIn("cache step deps", report["diagnostics"][0]["message"])
+
+    def restore_workflow(self, prefixes, action="actions/cache"):
+        text = self.fixture("safe").replace("actions/cache@", action + "@")
+        return text.replace(
+            "restore-keys: deps-${{ runner.os }}-${{ matrix.node }}-",
+            "restore-keys: |\n" + "".join(f"            {p}\n" for p in prefixes),
+        )
+
+    def test_restore_prefix_coverage_and_aliases(self):
+        safe = "deps-${{ runner.os }}-${{ matrix.node }}-"
+        unknown = "deps-${{ steps.version.outputs.prefix }}-"
+        for action in ("actions/cache", "actions/cache/restore", "actions/cache/save"):
+            for prefixes, expected_rules, incomplete in (
+                ([safe], [], False),
+                (["deps-"], ["GHA-CACHE-005"], False),
+                ([unknown], [], True),
+                (["${{ env.PREFIX }}"], [], False),
+                (["${{ format('deps-{0}-{1}', runner.os, matrix.node) }}"], [], False),
+                (
+                    ["${{ steps.setup.outputs.node-version }}-${{ runner.os }}-"],
+                    [],
+                    False,
+                ),
+                ([safe, unknown, "deps-", unknown], ["GHA-CACHE-005"], True),
+            ):
+                with self.subTest(action=action, prefixes=prefixes):
+                    text = (
+                        self.restore_workflow(prefixes, action)
+                        .replace("jobs:", f"env:\n  PREFIX: {safe}\njobs:")
+                        .replace(
+                            "      - uses: actions/setup-node",
+                            "      - id: setup\n        uses: actions/setup-node",
+                        )
+                    )
+                    self.write(text)
+                    status, output = self.cli(
+                        "--format", "json", "--min-confidence", "medium"
+                    )
+                    report = json.loads(output)
+                    self.assertEqual(
+                        status, 2 if incomplete else 1 if expected_rules else 0
+                    )
+                    self.assertEqual(
+                        [f["rule_id"] for f in report["findings"]], expected_rules
+                    )
+                    self.assertEqual(len(report["diagnostics"]), int(incomplete))
+                    if incomplete:
+                        diagnostic = report["diagnostics"][0]
+                        self.assertEqual(
+                            diagnostic["file"], ".github/workflows/test.yml"
+                        )
+                        self.assertEqual(diagnostic["line"], 17)
+                        for detail in (
+                            unknown,
+                            "job test",
+                            "cache step 2",
+                            "restore prefix",
+                            "GHA-CACHE-005",
+                        ):
+                            self.assertIn(detail, diagnostic["message"])
+
+    def test_incomplete_reports_preserve_findings_across_formats(self):
+        unknown = "deps-${{ steps.version.outputs.prefix }}-"
+        text = (
+            self.restore_workflow(["deps-", unknown])
+            .replace(
+                "path: node_modules",
+                "path: |\n            node_modules\n            **/node_modules",
+            )
+            .replace(
+                "${{ matrix.node }}-${{ hashFiles('package-lock.json') }}",
+                "${{ matrix.node }}",
+            )
+        )
+        self.write(text)
+        status, output = self.cli("--format", "json", "--min-confidence", "medium")
+        report = json.loads(output)
+        self.assertEqual(status, 2)
+        expected_rules = ["GHA-CACHE-003", "GHA-CACHE-005"]
+        self.assertEqual([f["rule_id"] for f in report["findings"]], expected_rules)
+        self.assertEqual(len(report["diagnostics"]), 2)
+        status, text_report = self.cli("--min-confidence", "medium")
+        self.assertEqual(status, 2)
+        self.assertIn("Analysis incomplete", text_report)
+        self.assertIn("1 cache definitions discovered", text_report)
+        self.assertNotIn("definitions analyzed", text_report)
+        status, output = self.cli("--format", "sarif", "--min-confidence", "medium")
+        self.assertEqual(status, 2)
+        run = json.loads(output)["runs"][0]
+        self.assertEqual([f["ruleId"] for f in run["results"]], expected_rules)
+        invocation = run["invocations"][0]
+        self.assertFalse(invocation["executionSuccessful"])
+        notifications = invocation["toolExecutionNotifications"]
+        self.assertEqual(len(notifications), 2)
+        for diagnostic, notification in zip(report["diagnostics"], notifications):
+            location = f"{diagnostic['file']}:{diagnostic['line']}"
+            self.assertIn(location + ": " + diagnostic["message"], text_report)
+            self.assertEqual(
+                notification["message"]["text"], location + ": " + diagnostic["message"]
+            )
+            physical = notification["locations"][0]["physicalLocation"]
+            self.assertEqual(physical["artifactLocation"]["uri"], diagnostic["file"])
+            self.assertEqual(physical["region"]["startLine"], diagnostic["line"])
+
+    def test_action_report_step_forwards_cli_status(self):
+        action = yaml.safe_load((FIXTURES.parent.parent / "action.yml").read_text())
+        # Execute the real report/exit path after package installation, using the
+        # test environment's installed CLI. No network or cache service is used.
+        script = action["runs"]["steps"][0]["run"]
+        report_script = 'report="' + script.split('report="', 1)[1]
+        script_file = self.root / "report.sh"
+        script_file.write_text("set -euo pipefail\n" + report_script)
+        for prefixes, status in (
+            (["deps-${{ runner.os }}-${{ matrix.node }}-"], 0),
+            (["deps-"], 1),
+            (["deps-", "${{ steps.v.outputs.prefix }}"], 2),
+        ):
+            for workflow_dir in ("", ".github/workflows"):
+                with self.subTest(status=status, workflow_dir=workflow_dir):
+                    self.write(self.restore_workflow(prefixes))
+                    output_file = self.root / "outputs"
+                    output_file.write_text("")
+                    result = subprocess.run(
+                        ["bash", str(script_file)],
+                        cwd=self.root,
+                        env=os.environ
+                        | {
+                            "audit_tmp": str(self.root),
+                            "audit_python": sys.executable,
+                            "AUDITOR_FORMAT": "json",
+                            "AUDITOR_CONFIDENCE": "medium",
+                            "AUDITOR_WORKFLOW_DIR": workflow_dir,
+                            "AUDITOR_TARGET": str(self.root),
+                            "GITHUB_OUTPUT": str(output_file),
+                        },
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, status, result.stderr)
+                    name, filename = output_file.read_text().strip().split("=", 1)
+                    self.assertEqual(name, "report")
+                    report = json.loads(Path(filename).read_text())
+                    self.assertEqual(bool(report["diagnostics"]), status == 2)
+                    self.assertEqual(bool(report["findings"]), status != 0)
+                    self.assertIn("::stop-commands::", result.stdout)
+                    self.assertIn(Path(filename).read_text().strip(), result.stdout)
 
     def test_multiple_caches(self):
         text = self.fixture("matrix")

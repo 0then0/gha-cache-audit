@@ -60,10 +60,22 @@ Diagnostics are included even when findings are present.
 
 Exit codes:
 
-- `0`: no findings at the selected confidence.
-- `1`: findings were reported.
+- `0`: analysis completed within the documented model, with no findings at the
+  selected confidence and no diagnostics.
+- `1`: findings were reported, with no diagnostics.
 - `2`: parse/configuration error or an unsupported workflow structure prevented
   complete analysis.
+
+Diagnostics take precedence: findings and diagnostics together return `2`, and
+the findings remain in the report. Confidence filters and suppressions do not
+remove diagnostics. Text reports with diagnostics end with `Analysis incomplete`
+even when no findings are confirmed. JSON uses the existing `diagnostics` list;
+SARIF uses invocation notifications and `executionSuccessful: false`.
+
+The text count and JSON `caches` list describe discovered cache definitions
+retained in the inventory, not fully analyzed or proven-safe caches. Definitions
+skipped before inventory creation (for example, an opaque primary key) may only
+appear in diagnostics.
 
 The default minimum confidence is `high`. `--min-confidence medium` includes
 both high- and medium-confidence findings.
@@ -102,6 +114,34 @@ requirements, uv, Poetry, and Pipenv. Runtime axes are inferred from setup
 configuration, not guessed from matrix names. A single fixed OS does not prove
 cross-platform cache reuse.
 
+Artifact inference uses static workspace-relative paths such as `node_modules`,
+`packages/app/node_modules`, `.venv`, `dist`, `build`, and `.next/cache`. Unknown
+ordinary static directories are outside the inferred artifact types and do not
+produce diagnostics solely for being unknown; explicit artifact configuration
+can supply their inputs.
+
+Cache path globs (for example, `**/node_modules`, `packages/?/node_modules`,
+character classes, or exclusions), expressions, and home-directory paths
+such as `~/project/node_modules` prevent artifact inference and produce incomplete
+analysis diagnostics. Each diagnostic identifies the workflow, cache definition
+line, job, cache step, and original path. It does not claim that the cache is
+incorrect. Other recognized paths in the same definition and their key checks
+are retained. Paths are not expanded against the local checkout: installed
+directories may only appear later on the runner. This is not an implementation
+of `@actions/glob`.
+
+Braces and extglob-like names such as `custom{data}` and `custom+(data)` are
+literal directory names, as in `@actions/glob`; they do not by themselves make
+analysis incomplete.
+
+Restore prefixes with unknown dependencies, such as
+`deps-${{ steps.version.outputs.prefix }}-`, produce a diagnostic that the
+GHA-CACHE-005 compatibility check was skipped for that prefix. The value is not
+guessed. Primary-key findings and checks on other known prefixes are retained.
+Supported expressions, environment aliases, and recognized setup runtime outputs
+continue to supply dependencies. This applies to explicit `actions/cache`,
+`actions/cache/restore`, and `actions/cache/save` definitions.
+
 ### Setup actions and intentional non-findings
 
 Explicit built-in caching in `actions/setup-node` and `actions/setup-python` is
@@ -111,11 +151,15 @@ arbitrary pinned revisions. `setup-node` caches package downloads, not
 `node_modules`; sharing Node.js versions there is expected. `setup-python`'s pip
 key includes OS, architecture, and Python version.
 
-Package download stores such as `~/.npm`, the pnpm store, and pip/uv caches are
+Package download stores such as `~/.npm`, `.pnpm-store`, `~/.pnpm-store`,
+`~/.local/share/pnpm/store`, and `~/.cache/{pip,uv,yarn,pnpm}` (each a literal
+directory, not a brace pattern), including patterns confined to their
+subdirectories such as `~/.npm/**` and `.pnpm-store/**`, are
 not treated as installed dependency trees. Their own content/version addressing
-makes unconditional runtime or lockfile warnings misleading. `.next/cache` is
-incremental and can be useful after source changes, so its key is not required
-to hash every source file.
+makes unconditional runtime or lockfile warnings misleading. These known home
+paths do not cause incomplete-analysis diagnostics merely for using `~`.
+`.next/cache` is incremental and can be useful after source changes, so its key
+is not required to hash every source file.
 
 ## Configuration and suppressions
 
@@ -157,8 +201,9 @@ steps:
 ```
 
 Replace `vX.Y.Z` with a published release tag. The Action returns the CLI's
-nonzero status when it finds issues. Its `report` output points to a temporary
-file containing the generated report, including when findings cause a failure.
+status, including `2` for incomplete analysis with or without findings. Its
+`report` output points to a temporary file containing the generated report,
+including on nonzero exits.
 To upload SARIF, add a following `if: always()` step using
 `github/codeql-action/upload-sarif` and grant the caller's workflow the required
 `security-events: write` permission. Upload and permissions remain controlled
@@ -188,20 +233,21 @@ The analyzer prioritizes fewer false positives over coverage:
 - Dynamic matrices in cache-bearing jobs and reusable workflow **calls** are
   reported as incomplete. Reusable workflow files with ordinary jobs can be
   analyzed directly. Inputs and secrets are not resolved across callers.
-- Unknown key references, including arbitrary step outputs; conditional or
-  multiple runtime setup steps; conditional jobs with caches; conditional cache
-  steps; and opaque paths are conservatively skipped with a diagnostic and exit
-  code `2`. Deep or repeatedly expanded environment aliases are also bounded
-  and reported as incomplete. Statically `true`, `false`, and `always()`
-  conditions are handled directly.
+- Unknown primary-key references, including arbitrary step outputs; conditional
+  or multiple runtime setup steps; conditional jobs with caches; conditional
+  cache steps; opaque paths; and unknown restore prefixes are conservatively
+  skipped at the affected scope with a diagnostic and exit code `2`. Independent
+  findings and supported paths/prefixes are retained. Deep or repeatedly expanded
+  environment aliases are also bounded and reported as incomplete. Statically
+  `true`, `false`, and `always()` conditions are handled directly.
 - Shell interpretation, transitive task graphs, remote actions, containers,
   arbitrary package-manager scripts, and dynamic `GITHUB_ENV` evaluation are
   not modeled.
 - An expression dependency is not proof of an injective expression. Complex
   expressions may hide a collision.
-- File glob support is a conservative approximation, not full `@actions/glob`.
-  Ordered positive patterns and `!` exclusions are recognized; unusual patterns
-  can be missed. Windows drive-qualified and UNC `hashFiles` patterns are
+- `hashFiles` glob support is a conservative approximation, not full
+  `@actions/glob`. Ordered positive patterns and `!` exclusions are recognized;
+  unusual patterns can be missed. Windows drive-qualified and UNC patterns are
   reported as incomplete. A leading `/` is treated as repository-root-relative,
   as GitHub Actions does. Runtime version files and arbitrary configuration
   file build graphs are not inferred. Use explicit artifact inputs when

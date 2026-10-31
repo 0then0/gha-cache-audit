@@ -88,6 +88,16 @@ def render(findings, diagnostics, caches, output_format):
                                         "message": {
                                             "text": f"{d.file}:{d.line}: {d.message}"
                                         },
+                                        "locations": [
+                                            {
+                                                "physicalLocation": {
+                                                    "artifactLocation": {
+                                                        "uri": quote(d.file, safe="/")
+                                                    },
+                                                    "region": {"startLine": d.line},
+                                                }
+                                            }
+                                        ],
                                     }
                                     for d in diagnostics
                                 ],
@@ -110,8 +120,12 @@ def render(findings, diagnostics, caches, output_format):
     blocks += [
         f"Analysis diagnostic: {d.file}:{d.line}: {d.message}" for d in diagnostics
     ]
+    if diagnostics:
+        blocks.append(
+            f"Analysis incomplete ({len(findings)} findings; {len(caches)} cache definitions discovered)."
+        )
     return (
         "\n\n".join(blocks)
         if blocks
-        else f"No findings ({len(caches)} cache definitions analyzed)."
+        else f"No findings ({len(caches)} cache definitions discovered)."
     )

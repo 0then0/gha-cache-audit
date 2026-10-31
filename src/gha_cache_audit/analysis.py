@@ -125,9 +125,39 @@ def hashed_for_job(path, pattern_groups, rows, runner, aliases):
     return hash_coverage(path, pattern_groups, rows, runner, aliases) is True
 
 
+def is_download_store(normalized: str):
+    stores = (
+        "~/.npm",
+        "~/.pnpm-store",
+        "~/.local/share/pnpm/store",
+        "~/.cache/pip",
+        "~/.cache/uv",
+        "~/.cache/yarn",
+        "~/.cache/pnpm",
+        ".pnpm-store",
+    )
+    return any(
+        normalized == store or normalized.startswith(store + "/") for store in stores
+    )
+
+
+def cache_path_limitation(path: str):
+    """Explain syntax that prevents artifact inference, without expanding paths."""
+    normalized = path.replace("\\", "/").removeprefix("./").rstrip("/")
+    if "${{" in normalized:
+        return "expression cache path"
+    if is_download_store(normalized):
+        return None
+    if any(c in normalized for c in "*?[]") or normalized.startswith("!"):
+        return "glob cache path"
+    if normalized.startswith("~"):
+        return "home-directory cache path"
+    return None
+
+
 def classify(path: str):
     normalized = path.replace("\\", "/").removeprefix("./").rstrip("/")
-    if "${{" in normalized or any(c in normalized for c in "*?~"):
+    if cache_path_limitation(path) or is_download_store(normalized):
         return None
     name = PurePosixPath(normalized).name
     if name == "node_modules":
